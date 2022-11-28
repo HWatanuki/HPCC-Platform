@@ -1,0 +1,8 @@
+LABEL=$1
+[[ -z ${LABEL} ]] && LABEL=latest
+
+docker image build -t hwatanuki/platform-core:bitcoin \
+     --build-arg DOCKER_REPO=hpccsystems \
+     --build-arg BUILD_LABEL=${LABEL} \
+     addbitcoin/ 
+
