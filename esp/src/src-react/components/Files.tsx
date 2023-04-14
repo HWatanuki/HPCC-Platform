@@ -1,10 +1,10 @@
 import * as React from "react";
-import { CommandBar, ContextualMenuItemType, ICommandBarItemProps, Icon, Link, Image } from "@fluentui/react";
-import * as domClass from "dojo/dom-class";
+import { CommandBar, ContextualMenuItemType, ICommandBarItemProps, Icon, Link } from "@fluentui/react";
 import * as WsDfu from "src/WsDfu";
 import * as ESPLogicalFile from "src/ESPLogicalFile";
 import { formatCost } from "src/Session";
 import * as Utility from "src/Utility";
+import { QuerySortItem } from "src/store/Store";
 import nlsHPCC from "src/nlsHPCC";
 import { useConfirm } from "../hooks/confirm";
 import { useFluentPagedGrid } from "../hooks/grid";
@@ -39,7 +39,7 @@ const FilterFields: Fields = {
     "EndDate": { type: "datetime", label: nlsHPCC.ToDate },
 };
 
-function formatQuery(_filter, mine, currentUser) {
+function formatQuery(_filter): { [id: string]: any } {
     const filter = { ..._filter };
     if (filter.LogicalFiles || filter.SuperFiles) {
         filter.FileType = "";
@@ -71,9 +71,6 @@ function formatQuery(_filter, mine, currentUser) {
     if (filter.EndDate) {
         filter.EndDate = new Date(filter.StartDate).toISOString();
     }
-    if (mine === true) {
-        filter.Owner = currentUser?.username;
-    }
     return filter;
 }
 
@@ -82,14 +79,19 @@ const defaultUIState = {
 };
 
 interface FilesProps {
-    filter?: object;
+    filter?: { [id: string]: any };
+    sort?: QuerySortItem;
     store?: any;
+    page?: number;
 }
 
 const emptyFilter = {};
+const defaultSort = { attribute: undefined, descending: false };
 
 export const Files: React.FunctionComponent<FilesProps> = ({
     filter = emptyFilter,
+    sort = defaultSort,
+    page = 1,
     store
 }) => {
 
@@ -101,7 +103,6 @@ export const Files: React.FunctionComponent<FilesProps> = ({
     const [showRenameFile, setShowRenameFile] = React.useState(false);
     const [showAddToSuperfile, setShowAddToSuperfile] = React.useState(false);
     const [showDesprayFile, setShowDesprayFile] = React.useState(false);
-    const [mine, setMine] = React.useState(false);
     const { currentUser } = useMyAccount();
     const [viewByScope, setViewByScope] = React.useState(false);
     const [uiState, setUIState] = React.useState({ ...defaultUIState });
@@ -112,17 +113,19 @@ export const Files: React.FunctionComponent<FilesProps> = ({
     }, [store]);
 
     const query = React.useMemo(() => {
-        return formatQuery(filter, mine, currentUser);
-    }, [filter, mine, currentUser]);
+        return formatQuery(filter);
+    }, [filter]);
 
     const { Grid, GridPagination, selection, refreshTable, copyButtons } = useFluentPagedGrid({
         persistID: "files",
         store: gridStore,
         query,
+        sort,
+        pageNum: page,
         filename: "logicalfiles",
         columns: {
             col1: {
-                width: 27,
+                width: 16,
                 disabled: React.useCallback(function (item) {
                     return item ? item.__hpcc_isDir : true;
                 }, []),
@@ -130,7 +133,8 @@ export const Files: React.FunctionComponent<FilesProps> = ({
             },
             IsProtected: {
                 headerIcon: "LockSolid",
-                width: 25,
+                headerTooltip: nlsHPCC.Protected,
+                width: 16,
                 sortable: false,
                 formatter: React.useCallback(function (_protected) {
                     if (_protected === true) {
@@ -141,7 +145,8 @@ export const Files: React.FunctionComponent<FilesProps> = ({
             },
             IsCompressed: {
                 headerIcon: "ZipFolder",
-                width: 25,
+                headerTooltip: nlsHPCC.Compressed,
+                width: 16,
                 sortable: false,
                 formatter: React.useCallback(function (compressed) {
                     if (compressed === true) {
@@ -151,59 +156,56 @@ export const Files: React.FunctionComponent<FilesProps> = ({
                 }, [])
             },
             __hpcc_displayName: {
-                label: nlsHPCC.LogicalName, width: 600,
+                label: nlsHPCC.LogicalName,
                 formatter: React.useCallback(function (name, row) {
                     if (row.__hpcc_isDir) {
                         return name;
                     }
                     const url = "#/files/" + (row.NodeGroup ? row.NodeGroup + "/" : "") + name;
                     return <>
-                        <Image src={row.getStateImage ? row.getStateImage() : ""} />
+                        <Icon iconName={row.getStateIcon ? row.getStateIcon() : ""} />
                         &nbsp;
                         <Link href={url}>{name}</Link>
                     </>;
                 }, []),
             },
-            Owner: { label: nlsHPCC.Owner, width: 75 },
-            SuperOwners: { label: nlsHPCC.SuperOwner, width: 150 },
-            Description: { label: nlsHPCC.Description, width: 150 },
-            NodeGroup: { label: nlsHPCC.Cluster, width: 108 },
+            Owner: { label: nlsHPCC.Owner },
+            SuperOwners: { label: nlsHPCC.SuperOwner },
+            Description: { label: nlsHPCC.Description },
+            NodeGroup: { label: nlsHPCC.Cluster },
             RecordCount: {
-                label: nlsHPCC.Records, width: 85,
-                renderCell: React.useCallback(function (object, value, node, options) {
-                    domClass.add(node, "justify-right");
-                    node.innerText = Utility.valueCleanUp(value);
+                label: nlsHPCC.Records,
+                formatter: React.useCallback(function (value, row) {
+                    return Utility.valueCleanUp(value);
                 }, []),
             },
             IntSize: {
-                label: nlsHPCC.Size, width: 100,
-                renderCell: React.useCallback(function (object, value, node, options) {
-                    domClass.add(node, "justify-right");
-                    node.innerText = Utility.convertedSize(value);
+                label: nlsHPCC.Size,
+                formatter: React.useCallback(function (value, row) {
+                    return Utility.convertedSize(value);
                 }, []),
             },
             Parts: {
-                label: nlsHPCC.Parts, width: 60,
-                renderCell: React.useCallback(function (object, value, node, options) {
-                    domClass.add(node, "justify-right");
-                    node.innerText = Utility.valueCleanUp(value);
+                label: nlsHPCC.Parts, width: 40,
+                formatter: React.useCallback(function (value, row) {
+                    return Utility.valueCleanUp(value);
                 }, []),
             },
             MinSkew: {
-                label: nlsHPCC.MinSkew, width: 60, formatter: React.useCallback((value, row) => value ?? "", [])
+                label: nlsHPCC.MinSkew, width: 60, formatter: React.useCallback((value, row) => value ? `${Utility.formatDecimal(value / 100)}%` : "", [])
             },
             MaxSkew: {
-                label: nlsHPCC.MaxSkew, width: 60, formatter: React.useCallback((value, row) => value ?? "", [])
+                label: nlsHPCC.MaxSkew, width: 60, formatter: React.useCallback((value, row) => value ? `${Utility.formatDecimal(value / 100)}%` : "", [])
             },
-            Modified: { label: nlsHPCC.ModifiedUTCGMT, width: 162 },
+            Modified: { label: nlsHPCC.ModifiedUTCGMT },
             AtRestCost: {
-                label: nlsHPCC.FileCostAtRest, width: 100,
+                label: nlsHPCC.FileCostAtRest,
                 formatter: React.useCallback(function (cost, row) {
                     return `${formatCost(cost)}`;
                 }, [])
             },
             AccessCost: {
-                label: nlsHPCC.FileAccessCost, width: 100,
+                label: nlsHPCC.FileAccessCost,
                 formatter: React.useCallback(function (cost, row) {
                     return `${formatCost(cost)}`;
                 }, [])
@@ -281,12 +283,17 @@ export const Files: React.FunctionComponent<FilesProps> = ({
         },
         { key: "divider_5", itemType: ContextualMenuItemType.Divider, onRender: () => <ShortVerticalDivider /> },
         {
-            key: "mine", text: nlsHPCC.Mine, disabled: !currentUser, iconProps: { iconName: "Contact" }, canCheck: true, checked: mine,
+            key: "mine", text: nlsHPCC.Mine, disabled: !currentUser?.username, iconProps: { iconName: "Contact" }, canCheck: true, checked: filter.Owner === currentUser.username,
             onClick: () => {
-                setMine(!mine);
+                if (filter.Owner === currentUser.username) {
+                    filter.Owner = "";
+                } else {
+                    filter.Owner = currentUser.username;
+                }
+                pushParams(filter);
             }
         },
-    ], [currentUser, hasFilter, mine, refreshTable, selection, setShowDeleteConfirm, store, uiState.hasSelection, viewByScope]);
+    ], [currentUser, filter, hasFilter, refreshTable, selection, setShowDeleteConfirm, store, uiState.hasSelection, viewByScope]);
 
     //  Filter  ---
     const filterFields: Fields = {};

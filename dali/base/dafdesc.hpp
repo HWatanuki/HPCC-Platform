@@ -237,7 +237,7 @@ if endCluster is not called it will assume only one cluster and not replicated
     virtual void setPart(unsigned idx, INode *node, const char *filename, IPropertyTree *pt=NULL) = 0;
     virtual void endCluster(ClusterPartDiskMapSpec &map)=0;
 
-    virtual void setTraceName(const char *trc) = 0;                             // name used for progress reports, errors etc
+    virtual void setTraceName(const char *trc, bool normalize=true) = 0;        // name used for progress reports, errors etc
 
     virtual unsigned numParts() = 0;                                            // number of separate parts
     virtual unsigned numCopies(unsigned partidx) = 0;                           // number of copies
@@ -292,6 +292,7 @@ if endCluster is not called it will assume only one cluster and not replicated
     virtual void ensureReplicate() = 0;                                             // make sure a file can be replicated
 
     virtual IPropertyTree *queryHistory() = 0;                                       // query file history records
+    virtual void setFlags(FileDescriptorFlags flags) = 0;
 };
 
 interface ISuperFileDescriptor: extends IFileDescriptor
@@ -329,9 +330,11 @@ interface IStoragePlaneAlias: extends IInterface
 {
     virtual AccessMode queryModes() const = 0;
     virtual const char *queryPrefix() const = 0 ;
+    virtual bool isAccessible() const = 0;
 };
 
 //I'm not sure if this should be used in place of an IGroup, probably as system gradually changes
+interface IStorageApiInfo;
 interface IStoragePlane: extends IInterface
 {
     virtual const char * queryPrefix() const = 0;
@@ -340,6 +343,8 @@ interface IStoragePlane: extends IInterface
     virtual unsigned numDefaultSprayParts() const = 0 ;
     virtual bool queryDirPerPart() const = 0;
     virtual IStoragePlaneAlias *getAliasMatch(AccessMode desiredModes) const = 0;
+    virtual IStorageApiInfo *getStorageApiInfo() = 0;
+    virtual bool isAccessible() const = 0;
 };
 
 IClusterInfo *createClusterInfo(const char *grpname,                  // NULL if roxie label set
@@ -398,6 +403,7 @@ extern da_decl bool setReplicateDir(const char *name,StringBuffer &out, bool isr
 extern da_decl void initializeStorageGroups(bool createPlanesFromGroups);
 extern da_decl bool getDefaultStoragePlane(StringBuffer &ret);
 extern da_decl bool getDefaultSpillPlane(StringBuffer &ret);
+extern da_decl bool getDefaultIndexBuildStoragePlane(StringBuffer &ret);
 extern da_decl IStoragePlane * getDataStoragePlane(const char * name, bool required);
 extern da_decl IStoragePlane * getRemoteStoragePlane(const char * name, bool required);
 extern da_decl IStoragePlane * createStoragePlane(IPropertyTree *meta);

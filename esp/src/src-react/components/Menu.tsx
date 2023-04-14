@@ -1,8 +1,9 @@
 import * as React from "react";
-import { IconButton, IContextualMenuItem, INavLinkGroup, Nav, Pivot, PivotItem, Stack } from "@fluentui/react";
+import { IconButton, IContextualMenuItem, INavLink, INavLinkGroup, Nav, Pivot, PivotItem, Stack } from "@fluentui/react";
 import { useConst } from "@fluentui/react-hooks";
 import nlsHPCC from "src/nlsHPCC";
 import { hasLogAccess } from "src/ESPLog";
+import { containerized, bare_metal } from "src/BuildInfo";
 import { MainNav, routes } from "../routes";
 import { pushUrl } from "../util/history";
 import { useFavorite, useFavorites, useHistory } from "../hooks/favorite";
@@ -10,48 +11,53 @@ import { useUserTheme } from "../hooks/theme";
 import { Breadcrumbs } from "./Breadcrumbs";
 
 //  Top Level Nav  ---
-const navLinkGroups: INavLinkGroup[] = [
-    {
-        links: [
-            {
-                name: nlsHPCC.Activities,
-                url: "#/activities",
-                icon: "Home",
-                key: "activities"
-            },
-            {
-                name: nlsHPCC.ECL,
-                url: "#/workunits",
-                icon: "SetAction",
-                key: "workunits"
-            },
-            {
-                name: nlsHPCC.Files,
-                url: "#/files",
-                icon: "PageData",
-                key: "files"
-            },
-            {
-                name: nlsHPCC.PublishedQueries,
-                url: "#/queries",
-                icon: "Globe",
-                key: "queries"
-            },
-            {
-                name: nlsHPCC.Topology,
-                url: "#/topology",
-                icon: "Org",
-                key: "topology"
-            },
-            {
-                name: nlsHPCC.Operations,
-                url: "#/topology-old",
-                icon: "Admin",
-                key: "topology-old"
-            }
-        ]
+function navLinkGroups(): INavLinkGroup[] {
+    let links: INavLink[] = [
+        {
+            name: nlsHPCC.Activities,
+            url: "#/activities",
+            icon: "Home",
+            key: "activities"
+        },
+        {
+            name: nlsHPCC.ECL,
+            url: "#/workunits",
+            icon: "SetAction",
+            key: "workunits"
+        },
+        {
+            name: nlsHPCC.Files,
+            url: "#/files",
+            icon: "PageData",
+            key: "files"
+        },
+        {
+            name: nlsHPCC.PublishedQueries,
+            url: "#/queries",
+            icon: "Globe",
+            key: "queries"
+        },
+        {
+            name: nlsHPCC.Topology,
+            url: "#/topology",
+            icon: "Org",
+            key: "topology"
+        },
+        {
+            name: nlsHPCC.Operations,
+            url: "#/topology-bare-metal",
+            icon: "Admin",
+            key: "topology-bare-metal"
+        }
+    ];
+    if (!containerized) {
+        links = links.filter(l => l.key !== "topology");
     }
-];
+    if (!bare_metal) {
+        links = links.filter(l => l.key !== "topology-bare-metal");
+    }
+    return [{ links }];
+}
 
 const navIdx: { [id: string]: MainNav[] } = {};
 
@@ -92,7 +98,7 @@ export const MainNavigation: React.FunctionComponent<MainNavigationProps> = ({
     hashPath
 }) => {
 
-    const menu = useConst([...navLinkGroups]);
+    const menu = useConst([...navLinkGroups()]);
     const { theme, setTheme, isDark } = useUserTheme();
 
     const selKey = React.useMemo(() => {
@@ -104,8 +110,18 @@ export const MainNavigation: React.FunctionComponent<MainNavigationProps> = ({
             <Nav selectedKey={selKey} groups={menu} />
         </Stack.Item>
         <Stack.Item>
-            <IconButton iconProps={{ iconName: isDark ? "Sunny" : "ClearNight" }} onClick={() => setTheme(isDark ? "light" : "dark")} />
-            <IconButton iconProps={{ iconName: "Equalizer" }} onClick={() => { }} />
+            <IconButton
+                iconProps={{ iconName: isDark ? "Sunny" : "ClearNight" }}
+                onClick={() => {
+                    setTheme(isDark ? "light" : "dark");
+                    const themeChangeEvent = new CustomEvent("eclwatch-theme-toggle", {
+                        detail: { dark: !isDark }
+                    });
+                    document.dispatchEvent(themeChangeEvent);
+                }}
+            />
+            {/* Disable Theme editor button for launch of 9.0 */}
+            {/* <IconButton iconProps={{ iconName: "Equalizer" }} onClick={() => { }} /> */}
         </Stack.Item>
     </Stack>;
 };
@@ -121,7 +137,7 @@ type SubMenuItems = { [nav: string]: SubMenu[] };
 const subMenuItems: SubMenuItems = {
     "activities": [
         { headerText: nlsHPCC.Activities, itemKey: "/activities" },
-        { headerText: nlsHPCC.EventScheduler + " (L)", itemKey: "/events" }
+        { headerText: nlsHPCC.EventScheduler, itemKey: "/events" }
     ],
     "workunits": [
         { headerText: nlsHPCC.Workunits, itemKey: "/workunits" },
@@ -141,17 +157,17 @@ const subMenuItems: SubMenuItems = {
     "topology": [
         { headerText: nlsHPCC.Configuration, itemKey: "/topology/configuration" },
         { headerText: nlsHPCC.Pods, itemKey: "/topology/pods" },
+        { headerText: nlsHPCC.Services, itemKey: "/topology/services" },
         { headerText: nlsHPCC.Logs, itemKey: "/topology/logs" },
         { headerText: nlsHPCC.DaliAdmin, itemKey: "/topology/daliadmin" },
     ],
-    "topology-old": [
-        { headerText: nlsHPCC.Topology + " (L)", itemKey: "/topology-old" },
+    "topology-bare-metal": [
+        { headerText: nlsHPCC.Topology + " (L)", itemKey: "/topology-bare-metal" },
         { headerText: nlsHPCC.DiskUsage + " (L)", itemKey: "/diskusage" },
         { headerText: nlsHPCC.TargetClusters + " (L)", itemKey: "/clusters" },
         { headerText: nlsHPCC.ClusterProcesses + " (L)", itemKey: "/processes" },
         { headerText: nlsHPCC.SystemServers + " (L)", itemKey: "/servers" },
         { headerText: nlsHPCC.Security + " (L)", itemKey: "/security" },
-        { headerText: nlsHPCC.Monitoring, itemKey: "/monitoring" },
         { headerText: nlsHPCC.DESDL + " (L)", itemKey: "/desdl" },
     ],
 };
@@ -189,8 +205,13 @@ export const SubNavigation: React.FunctionComponent<SubNavigationProps> = ({
     const { theme, themeV9 } = useUserTheme();
 
     const [favorites] = useFavorites();
+    const [favoriteCount, setFavoriteCount] = React.useState(0);
     const [isFavorite, addFavorite, removeFavorite] = useFavorite(window.location.hash);
     const [history] = useHistory();
+
+    React.useEffect(() => {
+        setFavoriteCount(Object.keys(favorites).length);
+    }, [favorites]);
 
     const mainNav = React.useMemo(() => {
         return navSelectedKey(hashPath);
@@ -245,13 +266,21 @@ export const SubNavigation: React.FunctionComponent<SubNavigationProps> = ({
             </Stack.Item>
             <Stack.Item align="center" grow={0}>
                 <IconButton title={nlsHPCC.History} iconProps={{ iconName: "History" }} menuProps={{ items: history }} />
-                <IconButton title={nlsHPCC.Favorites} iconProps={{ iconName: isFavorite ? "FavoriteStarFill" : "FavoriteStar" }} menuProps={{ items: favoriteMenu }} split onClick={() => {
-                    if (isFavorite) {
-                        removeFavorite();
-                    } else {
-                        addFavorite();
-                    }
-                }} styles={{ splitButtonMenuButton: { backgroundColor: theme.palette.themeLighter, border: "none" } }} />
+                <IconButton
+                    title={isFavorite ? nlsHPCC.RemoveFromFavorites : nlsHPCC.AddToFavorites}
+                    iconProps={{ iconName: isFavorite ? "FavoriteStarFill" : "FavoriteStar" }}
+                    menuProps={favoriteCount ? { items: favoriteMenu } : null}
+                    split={favoriteCount > 0}
+                    splitButtonAriaLabel={nlsHPCC.Favorites}
+                    onClick={() => {
+                        if (isFavorite) {
+                            removeFavorite();
+                        } else {
+                            addFavorite();
+                        }
+                    }}
+                    styles={{ splitButtonMenuButton: { backgroundColor: theme.palette.themeLighter, border: "none" } }}
+                />
             </Stack.Item>
         </Stack>
     </div>;

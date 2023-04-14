@@ -78,7 +78,7 @@ const StatisticsMapping groupActivityStatistics({StNumGroups, StNumGroupMax}, ba
 const StatisticsMapping hashJoinActivityStatistics({StNumLeftRows, StNumRightRows}, basicActivityStatistics);
 const StatisticsMapping indexReadStatistics({StNumIndexSeeks, StNumIndexScans, StNumPostFiltered, StNumIndexWildSeeks});
 const StatisticsMapping indexReadActivityStatistics({StNumRowsProcessed}, diskReadRemoteStatistics, basicActivityStatistics, indexReadStatistics);
-const StatisticsMapping indexWriteActivityStatistics({StPerReplicated}, basicActivityStatistics, diskWriteRemoteStatistics);
+const StatisticsMapping indexWriteActivityStatistics({StPerReplicated, StNumLeafCacheAdds, StNumNodeCacheAdds, StNumBlobCacheAdds }, basicActivityStatistics, diskWriteRemoteStatistics);
 const StatisticsMapping keyedJoinActivityStatistics({ StNumIndexSeeks, StNumIndexScans, StNumIndexAccepted, StNumPostFiltered, StNumPreFiltered, StNumDiskSeeks, StNumDiskAccepted, StNumDiskRejected, StNumIndexWildSeeks}, basicActivityStatistics);
 const StatisticsMapping loopActivityStatistics({StNumIterations}, basicActivityStatistics);
 const StatisticsMapping lookupJoinActivityStatistics({StNumSmartJoinSlavesDegradedToStd, StNumSmartJoinDegradedToLocal}, basicActivityStatistics);
@@ -86,7 +86,7 @@ const StatisticsMapping joinActivityStatistics({StNumLeftRows, StNumRightRows}, 
 const StatisticsMapping diskReadActivityStatistics({StNumDiskRowsRead}, basicActivityStatistics, diskReadRemoteStatistics);
 const StatisticsMapping diskWriteActivityStatistics({StPerReplicated}, basicActivityStatistics, diskWriteRemoteStatistics);
 const StatisticsMapping sortActivityStatistics({}, basicActivityStatistics, spillStatistics);
-const StatisticsMapping graphStatistics({StNumExecutions}, basicActivityStatistics);
+const StatisticsMapping graphStatistics({StNumExecutions, StSizeSpillFile, StSizePeakSpillFile}, basicActivityStatistics);
 const StatisticsMapping diskReadPartStatistics({StNumDiskRowsRead}, diskReadRemoteStatistics);
 
 
@@ -671,11 +671,11 @@ public:
     {
         assertex(!isEmptyString(_rootDir) && !isEmptyString(_prefix) && !isEmptyString(_subDirName));
         CriticalBlock block(crit);
-        assertex(subDirPath.isEmpty());
         rootDir.set(_rootDir);
         addPathSepChar(rootDir);
         subDirName.set(_subDirName);
         prefix.set(_prefix);
+        // NB: subDirPath will be empty, unless there was a problem during the job ctor. Either way ok to clear/set.
         subDirPath.setf("%s%s", rootDir.str(), subDirName.str());
         bool ret = recursiveCreateDirectory(subDirPath);
         VStringBuffer msg("%s to create temp directory %s", ret ? "Succeeded" : "Failed", subDirPath.str());
@@ -1276,6 +1276,9 @@ public:
     {
         CMessageBuffer msg;
         msg.append(1); // stop
+#ifdef TRACE_GLOBAL_GROUP
+        ActPrintLog(&activity, "%s - sending to %u", __func__, node);
+#endif
         verifyex(comm.send(msg, node, mpTag));
     }
 };
@@ -1308,6 +1311,9 @@ public:
     }
     ~CRowServer()
     {
+#ifdef TRACE_GLOBAL_GROUP
+        ActPrintLog(activity, "%s", __func__);
+#endif
         stop();
         threaded.join();
     }
@@ -1317,6 +1323,9 @@ public:
         while (running)
         {
             rank_t sender;
+#ifdef TRACE_GLOBAL_GROUP
+            ActPrintLog(activity, "%s - recv()", __func__);
+#endif
             if (comm.recv(mb, RANK_ALL, mpTag, &sender))
             {
                 unsigned code;
@@ -1325,6 +1334,9 @@ public:
                     mb.read(code);
                     if (1 == code) // stop
                     {
+#ifdef TRACE_GLOBAL_GROUP
+                        ActPrintLog(activity, "%s - received stop mb.len=%u, sender=%u", __func__, mb.length(), (unsigned)sender);
+#endif
                         seq->stop();
                         break;
                     }
@@ -1347,7 +1359,14 @@ public:
         }
         running = false;
     }
-    void stop() { running = false; comm.cancel(RANK_ALL, mpTag); }
+    void stop()
+    {
+#ifdef TRACE_GLOBAL_GROUP
+        ActPrintLog(activity, "%s", __func__);
+#endif
+        running = false;
+        comm.cancel(RANK_ALL, mpTag);
+    }
 };
 
 IRowServer *createRowServer(CActivityBase *activity, IRowStream *seq, ICommunicator &comm, mptag_t mpTag)

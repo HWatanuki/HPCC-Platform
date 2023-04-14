@@ -55,10 +55,10 @@ data:
       template:
         metadata:
           labels:
-            {{- include "hpcc.addStandardLabels" (dict "root" $ "component" $apptype "name" "eclagent" "instance" $appJobName) | indent 12 }}
+            {{- include "hpcc.addStandardLabels" (dict "root" $ "component" $apptype "name" "eclagent" "instance" $appJobName "instanceOf" (printf "%s-job" .me.name)) | indent 12 }}
             accessDali: "yes"
             accessEsp: "yes"
-            helmVersion: 8.9.0-trunk0
+            helmVersion: 9.1.0-trunk0
 {{- if hasKey .me "labels" }}
 {{ toYaml .me.labels | indent 12 }}
 {{- end }}
@@ -72,7 +72,9 @@ data:
 {{- if $misc.postJobCommandViaSidecar }}
           shareProcessNamespace: true
 {{- end }}            
-{{- include "hpcc.addImagePullSecrets" . | nindent 10 -}}
+          initContainers:
+          {{- include "hpcc.changePlaneMountPerms" . | indent 10 }}
+          {{- include "hpcc.addImagePullSecrets" . | nindent 10 -}}
           containers:
 {{- if $misc.postJobCommandViaSidecar }}
 {{ include "hpcc.addWaitAndRunContainer" (. | merge (dict "command" $misc.postJobCommand)) | indent 10 }}
@@ -81,7 +83,7 @@ data:
 {{- include "hpcc.addSecurityContext" . | indent 12 }}
 {{ include "hpcc.addImageAttrs" . | indent 12 }}
 {{- include "hpcc.addResources" (dict "me" .me.resources) | indent 12 }}
-{{- $appCmd := printf "%s %s %s _HPCC_ARGS_" $apptype (include "hpcc.configArg" .me) (include "hpcc.daliArg" .root) }}
+{{- $appCmd := printf "%s %s %s _HPCC_ARGS_" $apptype (include "hpcc.configArg" .me) (include "hpcc.daliArg" (dict "root" .root "component" "ECL Agent" "optional" false )) }}
 {{ include "hpcc.addCommandAndLifecycle" (. | merge (dict "command" $appCmd)) | indent 12 }}
 {{- if .env }}
             env:
@@ -114,7 +116,9 @@ data:
 {{- $env := concat ($.Values.global.env | default list) (.env | default list) -}}
 {{- $apptype := .type | default "hthor" -}}
 {{- $secretsCategories := list "system" "eclUser" "ecl" "storage" }}
-{{- $commonCtx := dict "root" $ "me" . "secretsCategories" $secretsCategories "includeCategories" (list "lz" "data" "remote" "spill" "dll" "debug") "env" $env }}
+{{- $enginePlaneDetails := dict -}}
+{{- $_ := include "hpcc.getEnginePlanes" (dict "root" $ "me" . "result" $enginePlaneDetails) -}}
+{{- $commonCtx := dict "root" $ "me" . "secretsCategories" $secretsCategories "includeCategories" $enginePlaneDetails.planeCategories "includeNames" $enginePlaneDetails.namedPlanes "env" $env }}
 {{- $configSHA := include "hpcc.getConfigSHA" ($commonCtx | merge (dict "configMapHelper" "hpcc.agentConfigMap" "component" "eclagent" "excludeKeys" (print "global," $apptype ".replicas"))) }}
 {{- include "hpcc.checkDefaultStoragePlane" $commonCtx }}
 apiVersion: apps/v1
@@ -133,7 +137,7 @@ spec:
         run: {{ .name | quote }}
         accessDali: "yes"
         accessEsp: {{ .useChildProcesses | default false | ternary "yes" "no" | quote }}
-        helmVersion: 8.9.0-trunk0
+        helmVersion: 9.1.0-trunk0
 {{- if hasKey . "labels" }}
 {{ toYaml .labels | indent 8 }}
 {{- end }}
@@ -154,7 +158,7 @@ spec:
         command: [ {{ include "hpcc.componentCommand" (dict "me" . "root" $ "process" "agentexec") }} ] 
         args: [ {{- include "hpcc.componentStartArgs" (dict "me" . "root" $ "process" "agentexec") | nindent 16 }}
                 {{ include "hpcc.configArg" . }},
-                {{ include "hpcc.daliArg" $ }}
+                {{ include "hpcc.daliArg" (dict "root" $ "component" "ECL Agent" "optional" false) }}
               ]
         env:
 {{ include "hpcc.mergeEnvironments" $env | indent 8 -}}
@@ -184,6 +188,8 @@ kind: ConfigMap
 ---
 {{ include "hpcc.addCertificate" (dict "root" $ "name" .name "component" "eclagent") }}
 {{ include "hpcc.addCertificate" (dict "root" $ "name" .name "component" $apptype) }}
-
+---
+{{- $egressedPodLabels := list (ternary .name (printf "%s-job" .name) (.useChildProcesses | default false)) -}}
+{{- include "hpcc.addEgress" (dict "root" $ "me" . "labels" $egressedPodLabels) | nindent 0 -}}
 {{- end }}
 {{- end }}

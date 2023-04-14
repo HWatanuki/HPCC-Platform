@@ -164,7 +164,8 @@ interface IDistributedFilePart: implements IInterface
                                                         // note does not affect cluster order
 
     virtual unsigned copyClusterNum(unsigned copy,unsigned *replicate=NULL)=0;      // map copy number to cluster (and optionally replicate number)
-
+    virtual StringBuffer &getStorageFilePath(StringBuffer & path, unsigned copy)=0;
+    virtual unsigned getStripeNum(unsigned copy)=0;
 };
 
 
@@ -645,6 +646,8 @@ interface IDistributedFileDirectory: extends IInterface
     virtual IUserDescriptor* queryDefaultUser()=0;
     virtual SecAccessFlags getNodePermissions(const IpAddress &ip,IUserDescriptor *user,unsigned auditflags=0)=0;
     virtual SecAccessFlags getFDescPermissions(IFileDescriptor *,IUserDescriptor *user,unsigned auditflags=0)=0;
+    virtual SecAccessFlags getDLFNPermissions(CDfsLogicalFileName &dlfn,IUserDescriptor *user,unsigned auditflags=0)=0;
+    virtual SecAccessFlags getDropZoneScopePermissions(const char *dropZoneName,const char *dropZonePath,IUserDescriptor *user,unsigned auditflags=0)=0;
 
     virtual DistributedFileCompareResult fileCompare(const char *lfn1,const char *lfn2,DistributedFileCompareMode mode,StringBuffer &errstr,IUserDescriptor *user)=0;
     virtual bool filePhysicalVerify(const char *lfn1,IUserDescriptor *user,bool includecrc,StringBuffer &errstr)=0;
@@ -797,7 +800,10 @@ enum DistributedFileSystemError
     DFSERR_LookupConnectionTimout,       // only raised if timeout specified on lookup etc.
     DFSERR_FailedToDeleteFile,
     DFSERR_PassIterateFilesLimit,
-    DFSERR_RestrictedFileAccessDenied
+    DFSERR_RestrictedFileAccessDenied,
+    DFSERR_EmptyStoragePlane,
+    DFSERR_MissingStoragePlane,
+    DFSERR_PhysicalCompressedPartInvalid
 };
 
 
@@ -870,6 +876,8 @@ inline bool isPartTLK(IPropertyTree &pt) { const char *kind = pt.queryProp("@kin
 inline bool isPartTLK(IDistributedFilePart *p) { return isPartTLK(p->queryAttributes()); }
 inline bool isPartTLK(IPartDescriptor *p) { return isPartTLK(p->queryProperties()); }
 
+da_decl bool hasTLK(IDistributedFile *f);
+
 inline const char *queryFileKind(IPropertyTree &pt) { return pt.queryProp("@kind"); }
 inline const char *queryFileKind(IDistributedFile *f) { return queryFileKind(f->queryAttributes()); }
 inline const char *queryFileKind(IFileDescriptor *f) { return queryFileKind(f->queryProperties()); }
@@ -881,5 +889,7 @@ extern da_decl void calcFileCost(const char * cluster, double sizeGB, double fil
 extern da_decl double calcFileAccessCost(const char * cluster, __int64 numDiskWrites, __int64 numDiskReads);
 constexpr bool defaultPrivilegedUser = true;
 constexpr bool defaultNonPrivilegedUser = false;
+
+extern da_decl void configurePreferredPlanes();
 
 #endif

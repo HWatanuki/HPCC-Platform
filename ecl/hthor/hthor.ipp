@@ -382,16 +382,19 @@ class CHThorIndexWriteActivity : public CHThorActivityBase
     IHThorIndexWriteArg &helper;
     Owned<ClusterWriteHandler> clusterHandler;
     StringAttr filename;
+    StringBuffer defaultIndexCompression;
     Owned<IFile> file;
     bool incomplete;
     bool defaultNoSeek = false;
     offset_t sizeLimit;
     unsigned __int64 duplicateKeyCount = 0;
     unsigned __int64 cummulativeDuplicateKeyCount = 0;
+    unsigned __int64 totalLeafNodes = 0;
+    unsigned __int64 totalBranchNodes = 0;
+    unsigned __int64 totalBlobNodes = 0;
     stat_type numDiskWrites = 0;
     cost_type diskAccessCost = 0;
     void close();
-    void buildUserMetadata(Owned<IPropertyTree> & metadata);
     void buildLayoutMetadata(Owned<IPropertyTree> & metadata);
     virtual void updateProgress(IStatisticGatherer &progress) const override
     {
@@ -400,6 +403,9 @@ class CHThorIndexWriteActivity : public CHThorActivityBase
         progress.addStatistic(StNumDuplicateKeys, cummulativeDuplicateKeyCount);
         progress.addStatistic(StNumDiskWrites, numDiskWrites);
         progress.addStatistic(StCostFileAccess, diskAccessCost);
+        progress.addStatistic(StNumLeafCacheAdds, totalLeafNodes);
+        progress.addStatistic(StNumNodeCacheAdds, totalBranchNodes);
+        progress.addStatistic(StNumBlobCacheAdds, totalBlobNodes);
     }
 
 public:

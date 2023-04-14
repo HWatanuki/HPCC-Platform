@@ -99,9 +99,9 @@ if [[ -n "$BUILD_LN" ]]; then
   GITHUB_TOKEN=${LNB_TOKEN}
   lnBuildTag=${BUILD_TAG/community_/internal_}
   build_image platform-build-ln ${BUILD_LABEL} ${lnBuildTag}
+  ${SCRIPT_DIR}/cleanup.sh
   build_image platform-core-ln ${BUILD_LABEL} ${lnBuildTag} --build-arg BUILD_TAG_OVERRIDE=${HPCC_LONG_TAG}
 elif [[ -z "$BUILD_ML" ]]; then
-  build_image platform-build-base ${BASE_VER}
   build_image platform-build
   build_image platform-core
 else
@@ -112,4 +112,13 @@ fi
 if [[ -n ${INPUT_PASSWORD} ]] ; then
   echo "::set-output name=${BUILD_LABEL}"
   docker logout
+fi
+
+#cleanup any github secrets stored for BuildKit mounting
+if [[ -n {INPUT_SIGNING_SECRET} ]] ; then
+  rm -rf private.key
+fi
+
+if [[ -n {INPUT_SIGNING_PASSPHRASE} ]] ; then
+  rm -rf passphrase.txt
 fi

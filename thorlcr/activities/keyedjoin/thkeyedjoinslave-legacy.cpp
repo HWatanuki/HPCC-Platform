@@ -1359,7 +1359,8 @@ class CKeyedJoinSlave : public CSlaveActivity, implements IJoinProcessor, implem
                             ++candidateCount;
                             if (candidateCount > owner.atMost)
                                 break;
-                            KLBlobProviderAdapter adapter(partManager);
+                            IContextLogger * ctxLogger = nullptr;
+                            KLBlobProviderAdapter adapter(partManager, ctxLogger);
                             byte const * keyRow = partManager->queryKeyBuffer();
                             size_t fposOffset = partManager->queryRowSize() - sizeof(offset_t);
                             offset_t fpos = rtlReadBigUInt8(keyRow + fposOffset);
@@ -2420,18 +2421,17 @@ public:
         info.unknownRowsOutput = true;
     }
 
-    virtual void serializeStats(MemoryBuffer &mb) override
+    virtual void gatherActiveStats(CRuntimeStatisticCollection &activeStats) const
     {
+        PARENT::gatherActiveStats(activeStats);
         constexpr StatisticKind mapping[] = { StNumIndexSeeks, StNumIndexScans, StNumIndexAccepted, StNumPostFiltered, StNumPreFiltered, StNumDiskSeeks, StNumDiskAccepted, StNumDiskRejected };
         ForEachItemIn(s, _statsArr)
         {
             unsigned __int64 v = _statsArr.item(s);
             if (0 == v)
                 continue;
-            stats.setStatistic(mapping[s], v);
+            activeStats.setStatistic(mapping[s], v);
         }
-
-        CSlaveActivity::serializeStats(mb);
     }
 
 friend class CKeyedFetchHandler;

@@ -189,15 +189,19 @@
       </xsl:attribute>
 
       <xsl:apply-templates select="@*[string(.) != '']"/>
-      
+
+      <xsl:copy-of select="/Environment/Software/vaults"/>
       <xsl:copy-of select="/Environment/Software/Directories"/> 
       <!--
       # Generated for configuration info. accessed by getGlobalConfig()
       -->
       <global>
-       <storage>
-        <xsl:copy-of select="/Environment/Software/RemoteStorage/*"/>  
-       </storage>
+        <storage>
+          <xsl:copy-of select="/Environment/Software/RemoteStorage/*"/>  
+        </storage>
+        <expert>
+          <xsl:copy-of select="/Environment/Software/Globals/@* | /Environment/Software/Globals/*"/>
+        </expert>
       </global>
       <xsl:copy-of select="/Environment/Hardware/cost"/>
       @XSL_PLUGIN_DEFINITION@

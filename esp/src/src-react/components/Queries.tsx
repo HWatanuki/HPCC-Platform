@@ -3,6 +3,7 @@ import { CommandBar, ContextualMenuItemType, ICommandBarItemProps, Icon, Link } 
 import * as WsWorkunits from "src/WsWorkunits";
 import * as ESPQuery from "src/ESPQuery";
 import nlsHPCC from "src/nlsHPCC";
+import { QuerySortItem } from "src/store/Store";
 import { useConfirm } from "../hooks/confirm";
 import { useFluentPagedGrid } from "../hooks/grid";
 import { useMyAccount } from "../hooks/user";
@@ -26,16 +27,13 @@ const FilterFields: Fields = {
     "Activated": { type: "queries-active-state", label: nlsHPCC.Activated }
 };
 
-function formatQuery(filter: any, mine, currentUser) {
+function formatQuery(filter: any): { [id: string]: any } {
     const retVal = {
         ...filter,
         PriorityLow: filter.Priority,
         PriorityHigh: filter.Priority
     };
     delete retVal.Priority;
-    if (mine === true) {
-        retVal.Owner = currentUser?.username;
-    }
     return retVal;
 }
 
@@ -49,20 +47,24 @@ const defaultUIState = {
 
 interface QueriesProps {
     wuid?: string;
-    filter?: object;
+    filter?: { [id: string]: any };
+    sort?: QuerySortItem;
     store?: any;
+    page?: number;
 }
 
 const emptyFilter = {};
+const defaultSort = { attribute: undefined, descending: false };
 
 export const Queries: React.FunctionComponent<QueriesProps> = ({
     wuid,
     filter = emptyFilter,
+    sort = defaultSort,
+    page = 1,
     store
 }) => {
 
     const [showFilter, setShowFilter] = React.useState(false);
-    const [mine, setMine] = React.useState(false);
     const { currentUser } = useMyAccount();
     const [uiState, setUIState] = React.useState({ ...defaultUIState });
 
@@ -74,23 +76,25 @@ export const Queries: React.FunctionComponent<QueriesProps> = ({
     }, [store]);
 
     const query = React.useMemo(() => {
-        return formatQuery(filter, mine, currentUser);
-    }, [filter, mine, currentUser]);
+        return formatQuery(filter);
+    }, [filter]);
 
     const { Grid, GridPagination, selection, refreshTable, copyButtons } = useFluentPagedGrid({
         persistID: "queries",
         store: gridStore,
         query,
+        sort,
+        pageNum: page,
         filename: "roxiequeries",
         columns: {
             col1: {
-                width: 27,
+                width: 16,
                 selectorType: "checkbox"
             },
             Suspended: {
                 headerIcon: "Pause",
-                label: nlsHPCC.Suspended,
-                width: 25,
+                headerTooltip: nlsHPCC.Suspended,
+                width: 16,
                 sortable: false,
                 formatter: React.useCallback(function (suspended) {
                     if (suspended === true) {
@@ -101,7 +105,8 @@ export const Queries: React.FunctionComponent<QueriesProps> = ({
             },
             ErrorCount: {
                 headerIcon: "Warning",
-                width: 25,
+                headerTooltip: nlsHPCC.ErrorWarnings,
+                width: 16,
                 sortable: false,
                 formatter: React.useCallback(function (error) {
                     if (error > 0) {
@@ -112,7 +117,8 @@ export const Queries: React.FunctionComponent<QueriesProps> = ({
             },
             MixedNodeStates: {
                 headerIcon: "Error",
-                width: 25,
+                headerTooltip: nlsHPCC.MixedNodeStates,
+                width: 16,
                 sortable: false,
                 formatter: React.useCallback(function (mixed) {
                     if (mixed === true) {
@@ -123,7 +129,8 @@ export const Queries: React.FunctionComponent<QueriesProps> = ({
             },
             Activated: {
                 headerIcon: "SkypeCircleCheck",
-                width: 25,
+                headerTooltip: nlsHPCC.Active,
+                width: 16,
                 formatter: React.useCallback(function (activated) {
                     if (activated === true) {
                         return <Icon iconName="SkypeCircleCheck" />;
@@ -133,7 +140,6 @@ export const Queries: React.FunctionComponent<QueriesProps> = ({
             },
             Id: {
                 label: nlsHPCC.ID,
-                width: 380,
                 formatter: React.useCallback(function (Id, row) {
                     return <Link href={`#/queries/${row.QuerySetId}/${Id}`} >{Id}</Link>;
                 }, [])
@@ -145,35 +151,17 @@ export const Queries: React.FunctionComponent<QueriesProps> = ({
                     return priority === undefined ? "" : priority;
                 }, [])
             },
-            Name: {
-                label: nlsHPCC.Name
-            },
-            QuerySetId: {
-                width: 140,
-                label: nlsHPCC.Target,
-                sortable: true
-            },
+            Name: { label: nlsHPCC.Name },
+            QuerySetId: { label: nlsHPCC.Target, sortable: true },
             Wuid: {
-                width: 160,
-                label: nlsHPCC.WUID,
+                label: nlsHPCC.WUID, width: 100,
                 formatter: React.useCallback(function (Wuid, idx) {
                     return <Link href={`#/workunits/${Wuid}`}>{Wuid}</Link>;
                 }, [])
             },
-            Dll: {
-                width: 180,
-                label: nlsHPCC.Dll
-            },
-            PublishedBy: {
-                width: 100,
-                label: nlsHPCC.PublishedBy,
-                sortable: false
-            },
-            Status: {
-                width: 100,
-                label: nlsHPCC.Status,
-                sortable: false
-            }
+            Dll: { label: nlsHPCC.Dll },
+            PublishedBy: { label: nlsHPCC.PublishedBy, sortable: false },
+            Status: { label: nlsHPCC.Status, sortable: false }
         }
     });
 
@@ -212,19 +200,27 @@ export const Queries: React.FunctionComponent<QueriesProps> = ({
         { key: "divider_2", itemType: ContextualMenuItemType.Divider, onRender: () => <ShortVerticalDivider /> },
         {
             key: "Suspend", text: nlsHPCC.Suspend, disabled: !uiState.isSuspended,
-            onClick: () => { WsWorkunits.WUQuerysetQueryAction(selection, "Suspend"); }
+            onClick: () => {
+                WsWorkunits.WUQuerysetQueryAction(selection, "Suspend").then(() => refreshTable());
+            }
         },
         {
             key: "Unsuspend", text: nlsHPCC.Unsuspend, disabled: !uiState.isNotSuspended,
-            onClick: () => { WsWorkunits.WUQuerysetQueryAction(selection, "Unsuspend"); }
+            onClick: () => {
+                WsWorkunits.WUQuerysetQueryAction(selection, "Unsuspend").then(() => refreshTable());
+            }
         },
         {
             key: "Activate", text: nlsHPCC.Activate, disabled: !uiState.isActive,
-            onClick: () => { WsWorkunits.WUQuerysetQueryAction(selection, "Activate"); }
+            onClick: () => {
+                WsWorkunits.WUQuerysetQueryAction(selection, "Activate").then(() => refreshTable());
+            }
         },
         {
             key: "Deactivate", text: nlsHPCC.Deactivate, disabled: !uiState.isNotActive,
-            onClick: () => { WsWorkunits.WUQuerysetQueryAction(selection, "Deactivate"); }
+            onClick: () => {
+                WsWorkunits.WUQuerysetQueryAction(selection, "Deactivate").then(() => refreshTable());
+            }
         },
         { key: "divider_3", itemType: ContextualMenuItemType.Divider, onRender: () => <ShortVerticalDivider /> },
         {
@@ -234,12 +230,17 @@ export const Queries: React.FunctionComponent<QueriesProps> = ({
             }
         },
         {
-            key: "mine", text: nlsHPCC.Mine, disabled: !currentUser, iconProps: { iconName: "Contact" }, canCheck: true, checked: mine,
+            key: "mine", text: nlsHPCC.Mine, disabled: !currentUser?.username, iconProps: { iconName: "Contact" }, canCheck: true, checked: filter.PublishedBy === currentUser.username,
             onClick: () => {
-                setMine(!mine);
+                if (filter.PublishedBy === currentUser.username) {
+                    filter.PublishedBy = "";
+                } else {
+                    filter.PublishedBy = currentUser.username;
+                }
+                pushParams(filter);
             }
         },
-    ], [currentUser, hasFilter, mine, refreshTable, selection, setShowDeleteConfirm, store, uiState.hasSelection, uiState.isActive, uiState.isNotActive, uiState.isNotSuspended, uiState.isSuspended, wuid]);
+    ], [currentUser, filter, hasFilter, refreshTable, selection, setShowDeleteConfirm, store, uiState.hasSelection, uiState.isActive, uiState.isNotActive, uiState.isNotSuspended, uiState.isSuspended, wuid]);
 
     //  Filter  ---
     const filterFields: Fields = {};

@@ -621,6 +621,24 @@ void EclRepositoryManager::addMapping(const char * url, const char * path)
     repos.append(*new EclRepositoryMapping(repo, version, path));
 }
 
+void EclRepositoryManager::gatherPackagesUsed(StringArray & used) const
+{
+    for (auto const & cur : dependencies)
+    {
+        const char * url = cur.first.c_str();
+        if (!isEmptyString(url))
+        {
+            StringBuffer repoUrn, repo, version;
+            if (splitRepoVersion(repoUrn, repo, version, url, nullptr))
+            {
+                StringBuffer package;
+                package.append(repo).append("#").append(version);
+                used.append(package);
+            }
+        }
+    }
+}
+
 void EclRepositoryManager::processArchive(IPropertyTree * archiveTree)
 {
     IArrayOf<IEclRepository> savedSources;        // also includes -D options
@@ -770,11 +788,16 @@ IEclSourceCollection * EclRepositoryManager::resolveGitCollection(const char * r
 
     //Strip any trailing newlines and spaces.
     sha.clip();
+    if (options.optVerbose)
+        DBGLOG("Version '%s' resolved to sha '%s'", version.str(), sha.str());
 
     if (sha.isEmpty())
         throw makeStringExceptionV(99, "Branch/tag '%s' could not be found for dependency '%s'.", version.str(), defaultUrl);
 
-    path.append(repoPath).appendf("/.git/{%s}", sha.str());
+    path.append(repoPath).appendf("/.git/{%s", sha.str());
+    if (options.gitUser)
+        path.append("#").append(options.gitUser);
+    path.append("}");
 
     Owned<IErrorReceiver> errs = createThrowingErrorReceiver();
     unsigned flags = ESFdependencies;
@@ -853,24 +876,17 @@ unsigned EclRepositoryManager::runGitCommand(StringBuffer * output, const char *
                 if (secret)
                 {
                     MemoryBuffer gitKey;
-                    if (getSecretKeyValue(gitKey, secret, "password"))
+                    if (!getSecretKeyValue(gitKey, secret, "password"))
+                        DBGLOG("Secret doesn't contain password for git user %s", options.gitUser.str());
+                    else
                     {
-                        StringBuffer tempDir;
-                        getTempFilePath(tempDir, "eclcc", nullptr);
-
-                        StringBuffer extractedKeyFilename;
-                        OwnedIFileIO io = createUniqueFile(tempDir, "git", NULL, extractedKeyFilename);
-                        io->write(0, gitKey.length(), gitKey.toByteArray());
-                        io->close();
-
-                        //Prevent any other users from accessing the file
-                        extractedKey.setown(createIFile(extractedKeyFilename));
-                        extractedKey->setFilePermissions(0700);
-
-                        env.emplace_back("HPCC_GIT_PASSPATH", extractedKeyFilename.str());
+                        extractedKey.setown(writeToProtectedTempFile("eclcc", "git", gitKey.length(), gitKey.toByteArray()));
+                        env.emplace_back("HPCC_GIT_PASSPATH", extractedKey->queryFilename());
                         useScript = true;
                     }
                 }
+                else
+                    DBGLOG("No secret found for git user %s", options.gitUser.str());
             }
         }
 

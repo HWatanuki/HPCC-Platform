@@ -3,6 +3,7 @@ import * as xhr from "dojo/request/xhr";
 import * as topic from "dojo/topic";
 import { format as d3Format } from "@hpcc-js/common";
 import { SMCService } from "@hpcc-js/comms";
+import { cookieKeyValStore } from "src/KeyValStore";
 import { singletonDebounce } from "../src-react/util/throttle";
 import * as ESPUtil from "./ESPUtil";
 import { scopedLogger } from "@hpcc-js/util";
@@ -19,6 +20,8 @@ const sessionIsActive = espTimeoutSeconds;
 let _prevReset = Date.now();
 
 declare const dojoConfig;
+
+const userStore = cookieKeyValStore();
 
 const smc = new SMCService({ baseUrl: "" });
 
@@ -45,9 +48,9 @@ getBuildInfo().then(info => {
     dojoConfig.currencyCode = info["currencyCode"] ?? "";
 });
 
-const format = d3Format(".2f");
-export function formatCost(value?: number | string): string {
-    if (value !== 0 && !value) {
+const format = d3Format(",.2f");
+export function formatCost(value): string {
+    if (isNaN(value)) {
         logger.debug(`formatCost called for a nullish value: ${value}`);
         return "";
     }
@@ -57,8 +60,6 @@ export function formatCost(value?: number | string): string {
 
 export function initSession() {
     if (sessionIsActive > -1) {
-        cookie("Status", "Unlocked");
-        cookie("ECLWatchUser", "true");
 
         idleWatcher.on("active", function () {
             resetESPTime();
@@ -79,10 +80,12 @@ export function initSession() {
 }
 
 export function lock() {
+    cookie("Status", "Locked");
     idleWatcher.stop();
 }
 
 export function unlock() {
+    cookie("Status", "Unlocked");
     idleWatcher.start();
 }
 
@@ -90,7 +93,9 @@ export function fireIdle() {
     idleWatcher.fireIdle();
 }
 
-function resetESPTime() {
+async function resetESPTime() {
+    const userSession = userStore.getAll();
+    if (!userSession || !userSession["ECLWatchUser"] || !userSession["Status"] || userSession["Status"] === "Locked") return;
     if (Date.now() - _prevReset > SESSION_RESET_FREQ) {
         _prevReset = Date.now();
         xhr("esp/reset_session_timeout", {

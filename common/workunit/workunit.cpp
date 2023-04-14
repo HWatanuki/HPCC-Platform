@@ -1362,6 +1362,22 @@ protected:
 };
 
 
+class NullExtra : public CInterfaceOf< IConstWUStatistic >
+{
+    virtual IStringVal & getDescription(IStringVal & str, bool createDefault) const { return str; }
+    virtual IStringVal & getCreator(IStringVal & str) const { return str; }
+    virtual IStringVal & getFormattedValue(IStringVal & str) const { return str; }
+    virtual StatisticMeasure getMeasure() const { return SMeasureNone; }
+    virtual StatisticKind getKind() const { return StKindNone;}
+    virtual StatisticCreatorType getCreatorType() const { return SCTnone; }
+    virtual unsigned __int64 getValue() const { return 0; }
+    virtual unsigned __int64 getCount() const { return 0; }
+    virtual unsigned __int64 getMax() const { return 0;}
+    virtual const char * queryScope() const { return nullptr; }
+    virtual StatisticScopeType getScopeType() const { return SSTnone; }
+    virtual unsigned __int64 getTimestamp() const { return 0; }
+};
+static NullExtra nullExtra;
 
 /*
  * An implementation of IConstWUScopeIterator for the query graphs.
@@ -1495,6 +1511,18 @@ public:
                     visitor.noteHint(cur.queryProp("@name"), cur.queryProp("@value"));
                 }
             }
+            if (whichProperties & PTstatistics)
+            {
+                playAttribute(visitor, WaLabel);
+                Owned<IPropertyTreeIterator> attrs = cur.getElements("att");
+                ForEach(*attrs)
+                {
+                    IPropertyTree & cur = attrs->query();
+                    StatisticKind stat = queryStatisticKind(cur.queryProp("@name"), StKindNone);
+                    if (stat != StKindNone)
+                        visitor.noteStatistic(stat, cur.getPropInt64("@value"), nullExtra);
+                }
+            }
             break;
         }
         case SSTedge:
@@ -1508,6 +1536,7 @@ public:
                 playAttribute(visitor, WaSourceIndex);
                 playAttribute(visitor, WaTargetIndex);
                 playAttribute(visitor, WaIsDependency);
+                playAttribute(visitor, WaIsChildGraph);
             }
             break;
         }
@@ -2666,6 +2695,51 @@ cost_type aggregateDiskAccessCost(const IConstWorkUnit * wu, const char *scope)
     }
     return totalCost;
 }
+
+// totalSizeSpill and peakSizeSpill should be initialized to zero
+void gatherSpillSize(const IConstWorkUnit * wu, const char *scope, stat_type & totalSizeSpill, stat_type & peakSizeSpill)
+{
+    WuScopeFilter filter;
+    if (!isEmptyString(scope))
+        filter.addScope(scope);
+    else
+        filter.addScope("");
+    filter.setIncludeNesting(2);
+    filter.addSource("global");
+    filter.addOutputStatistic(StSizeSpillFile);
+    filter.addOutputStatistic(StSizePeakSpillFile);
+    filter.finishedFilter();
+    Owned<IConstWUScopeIterator> it = &wu->getScopeIterator(filter);
+    for (it->first(); it->isValid(); )
+    {
+        stat_type value = 0;
+        if (it->getStat(StSizeSpillFile, value))
+        {
+            totalSizeSpill += value;
+            if (it->getStat(StSizePeakSpillFile, value))
+            {
+                if (value>peakSizeSpill)
+                    peakSizeSpill = value;
+            }
+            it->nextSibling();
+        }
+        else
+        {
+            it->next();
+        }
+    }
+}
+
+void updateSpillSize(IWorkUnit * wu, const char * scope, StatisticScopeType scopeType)
+{
+    stat_type totalSizeSpill = 0, peakSizeSpill = 0;
+    gatherSpillSize(wu, scope, totalSizeSpill, peakSizeSpill);
+    if (totalSizeSpill)
+    {
+        wu->setStatistic(queryStatisticsComponentType(), queryStatisticsComponentName(), scopeType, scope, StSizePeakSpillFile, nullptr, peakSizeSpill, 1, 0, StatsMergeReplace);
+        wu->setStatistic(queryStatisticsComponentType(), queryStatisticsComponentName(), scopeType, scope, StSizeSpillFile, nullptr, totalSizeSpill, 1, 0, StatsMergeReplace);
+    }
+}
 //---------------------------------------------------------------------------------------------------------------------
 
 
@@ -3246,6 +3320,20 @@ WuScopeFilter & WuScopeFilter::addSource(const char * source)
         sourceFlags = mask;
     else
         sourceFlags |= mask;
+    return *this;
+}
+
+WuScopeFilter & WuScopeFilter::addSource(WuScopeSourceFlags source)
+{
+    checkModifiable();
+    sourceFlags |= source;
+    return *this;
+}
+
+WuScopeFilter & WuScopeFilter::setSources(WuScopeSourceFlags sources)
+{
+    checkModifiable();
+    sourceFlags = sources;
     return *this;
 }
 
@@ -6701,6 +6789,150 @@ extern WORKUNIT_API IWorkUnitFactory * getWorkUnitFactory(ISecManager *secmgr, I
         return new CSecureWorkUnitFactory(getWorkUnitFactory(), secmgr, secuser);
     else
         return getWorkUnitFactory();
+}
+
+class CUnexpectedWorkUnitFactory : implements IWorkUnitFactory, public CInterface
+{
+public:
+    IMPLEMENT_IINTERFACE;
+
+    virtual bool initializeStore() override
+    {
+        throwUnexpected();
+    }
+    virtual IWorkUnitWatcher *getWatcher(IWorkUnitSubscriber *subscriber, WUSubscribeOptions options, const char *wuid) const override
+    {
+        throwUnexpected();
+    }
+    virtual unsigned validateRepository(bool fix) override
+    {
+        throwUnexpected();
+    }
+    virtual void deleteRepository(bool recreate) override
+    {
+        throwUnexpected();
+    }
+    virtual void createRepository() override
+    {
+        throwUnexpected();
+    }
+    virtual const char *queryStoreType() const override
+    {
+        throwUnexpected();
+    }
+    virtual StringArray &getUniqueValues(WUSortField field, const char *prefix, StringArray &result) const override
+    {
+        throwUnexpected();
+    }
+
+    virtual IWorkUnit* createNamedWorkUnit(const char *wuid, const char *app, const char *user, ISecManager *secMgr, ISecUser *secUser) override
+    {
+        throwUnexpected();
+    }
+    virtual IWorkUnit* createWorkUnit(const char *app, const char *user, ISecManager *secMgr, ISecUser *secUser) override
+    {
+        throwUnexpected();
+    }
+    virtual bool deleteWorkUnit(const char * wuid, ISecManager *secMgr, ISecUser *secUser) override
+    {
+        throwUnexpected();
+    }
+    virtual bool deleteWorkUnitEx(const char * wuid, bool throwException, ISecManager *secMgr, ISecUser *secUser) override
+    {
+        throwUnexpected();
+    }
+    virtual IConstWorkUnit* openWorkUnit(const char *wuid, ISecManager *secMgr, ISecUser *secUser) override
+    {
+        throwUnexpected();
+    }
+    virtual IWorkUnit* updateWorkUnit(const char *wuid, ISecManager *secMgr, ISecUser *secUser) override
+    {
+        throwUnexpected();
+    }
+    virtual bool restoreWorkUnit(const char *base, const char *wuid, bool restoreAssociated) override
+    {
+        throwUnexpected();
+    }
+    virtual void importWorkUnit(const char *zapReportFileName, const char *zapReportPassword,
+        const char *importDir, const char *app, const char *user, ISecManager *secMgr, ISecUser *secUser) override
+    {
+        throwUnexpected();
+    }
+    virtual IWorkUnit * getGlobalWorkUnit(ISecManager *secMgr, ISecUser *secUser) override
+    {
+        throwUnexpected();
+    }
+
+    virtual IConstWorkUnitIterator * getWorkUnitsByOwner(const char * owner, ISecManager *secMgr, ISecUser *secUser) override
+    {
+        throwUnexpected();
+    }
+    virtual IConstWorkUnitIterator * getScheduledWorkUnits(ISecManager *secMgr, ISecUser *secUser) override
+    {
+        throwUnexpected();
+    }
+    virtual void descheduleAllWorkUnits(ISecManager *secMgr, ISecUser *secUser) override
+    {
+        throwUnexpected();
+    }
+
+    virtual int setTracingLevel(int newLevel) override
+    {
+        throwUnexpected();
+    }
+
+    virtual IConstWorkUnitIterator* getWorkUnitsSorted( WUSortField sortorder, // field to sort by
+                                                        WUSortField *filters,   // NULL or list of fields to filter on (terminated by WUSFterm)
+                                                        const void *filterbuf,  // (appended) string values for filters
+                                                        unsigned startoffset,
+                                                        unsigned maxnum,
+                                                        __int64 *cachehint,
+                                                        unsigned *total,
+                                                        ISecManager *secMgr, ISecUser *secUser) override
+    {
+        throwUnexpected();
+    }
+
+    virtual IConstQuerySetQueryIterator* getQuerySetQueriesSorted( WUQuerySortField *sortorder,
+                                                WUQuerySortField *filters,
+                                                const void *filterbuf,
+                                                unsigned startoffset,
+                                                unsigned maxnum,
+                                                __int64 *cachehint,
+                                                unsigned *total,
+                                                const MapStringTo<bool> *subset,
+                                                const MapStringTo<bool> *suspendedByCluster) override
+    {
+        throwUnexpected();
+    }
+
+    virtual unsigned numWorkUnits() override
+    {
+        throwUnexpected();
+    }
+
+    virtual bool isAborting(const char *wuid) const override
+    {
+        throwUnexpected();
+    }
+
+    virtual void clearAborting(const char *wuid) override
+    {
+        throwUnexpected();
+    }
+    virtual WUState waitForWorkUnit(const char * wuid, unsigned timeout, bool compiled, std::list<WUState> expectedStates) override
+    {
+        throwUnexpected();
+    }
+    virtual WUAction waitForWorkUnitAction(const char * wuid, WUAction original) override
+    {
+        throwUnexpected();
+    }
+};
+
+IWorkUnitFactory * createUnexpectedWorkUnitFactory()
+{
+    return new CUnexpectedWorkUnitFactory;
 }
 
 //==========================================================================================
@@ -12044,7 +12276,6 @@ extern WORKUNIT_API void submitWorkUnit(const char *wuid, const char *username, 
     Owned<IConstWorkUnit> cw = factory->openWorkUnit(wuid);
     assertex(cw);
     StringAttr clusterName(cw->queryClusterName());
-    cw.clear();
     if (!clusterName.length())
         throw MakeStringException(WUERR_InvalidCluster, "No target cluster specified");
 
@@ -12055,6 +12286,12 @@ extern WORKUNIT_API void submitWorkUnit(const char *wuid, const char *username, 
     if (!queue.get())
         throw MakeStringException(WUERR_InvalidQueue, "Could not create workunit queue");
 
+    {
+        Owned<IWorkUnit> wu = &cw->lock();
+        addTimeStamp(wu, SSTcompilestage, "compile", StWhenQueued, 0);
+    }
+
+    cw.clear();
     IJobQueueItem *item = createJobQueueItem(wuid);
     queue->enqueue(item);
 }
@@ -13651,6 +13888,11 @@ extern WORKUNIT_API void addTimeStamp(IWorkUnit * wu, StatisticScopeType scopeTy
     wu->setStatistic(queryStatisticsComponentType(), queryStatisticsComponentName(), scopeType, scopestr, kind, NULL, getTimeStampNowValue(), 1, 0, StatsMergeAppend);
 }
 
+extern WORKUNIT_API void addTimeStamp(IWorkUnit * wu, unsigned wfid, const char * scope, StatisticKind kind)
+{
+    addTimeStamp(wu, getScopeType(scope), scope, kind, wfid);
+}
+
 static double getCpuSize(const char *resourceName)
 {
     Owned<IPropertyTree> compConfig = getComponentConfig();
@@ -13696,9 +13938,9 @@ extern WORKUNIT_API double getThorWorkerRate()
     return getCostCpuHour() * numCpus ;
 }
 
-extern WORKUNIT_API double calculateThorCost(unsigned __int64 ms, unsigned clusterWidth)
+extern WORKUNIT_API double calculateThorCost(unsigned __int64 ms, unsigned numberOfMachines)
 {
-    return calcCost(getThorManagerRate(), ms) + calcCost(getThorWorkerRate(), ms) * clusterWidth;
+    return calcCost(getThorManagerRate(), ms) + calcCost(getThorWorkerRate(), ms) * numberOfMachines;
 }
 
 void aggregateStatistic(StatsAggregation & result, IConstWorkUnit * wu, const WuScopeFilter & filter, StatisticKind search)
@@ -13908,7 +14150,12 @@ bool isValidMemoryValue(const char *memoryUnit)
 #define ABORT_POLL_PERIOD (5*1000)
 void executeThorGraph(const char * graphName, IConstWorkUnit &workunit, const IPropertyTree &config)
 {
-    unsigned timelimit = workunit.getDebugValueInt("thorConnectTimeout", config.getPropInt("@thorConnectTimeout", 60));
+    unsigned timelimit = workunit.getDebugValueInt("maxGraphStartupTime", config.getPropInt("@maxGraphStartupTime", NotFound));
+    if (NotFound == timelimit)
+    {
+        // check legacy property
+        timelimit = workunit.getDebugValueInt("thorConnectTimeout", config.getPropInt("@thorConnectTimeout", 600));
+    }
     StringAttr wuid(workunit.queryWuid());
     IConstWUGraph *graph = workunit.getGraph(graphName);
     if (!graph)
@@ -13917,6 +14164,9 @@ void executeThorGraph(const char * graphName, IConstWorkUnit &workunit, const IP
 
     StringAttr owner(workunit.queryUser());
     int priority = workunit.getPriorityValue();
+
+    VStringBuffer jobName("%u/%s/%s", wfid, wuid.get(), graphName);
+
 #ifdef _CONTAINERIZED
     // NB: If a single agent were to want to launch >1 Thor, then the threading could be in the workflow above this call.
 
@@ -13943,8 +14193,13 @@ void executeThorGraph(const char * graphName, IConstWorkUnit &workunit, const IP
             // or an existing idle Thor listening on the same queue will pick it up.
             VStringBuffer queueName("%s.thor", config.queryProp("@queue"));
             DBGLOG("Queueing wuid=%s, graph=%s, on queue=%s, timelimit=%u seconds", wuid.str(), graphName, queueName.str(), timelimit);
+
+            {
+                Owned<IWorkUnit> w = &workunit.lock();
+                addTimeStamp(w, wfid, graphName, StWhenQueued);
+            }
+
             Owned<IJobQueue> queue = createJobQueue(queueName);
-            VStringBuffer jobName("%s/%s", wuid.get(), graphName);
             IJobQueueItem *item = createJobQueueItem(jobName);
             item->setOwner(owner);
             item->setPriority(priority);
@@ -14113,10 +14368,14 @@ void executeThorGraph(const char * graphName, IConstWorkUnit &workunit, const IP
 
         pollthread.start();
 
+        {
+            Owned<IWorkUnit> w = &workunit.lock();
+            addTimeStamp(w, wfid, graphName, StWhenQueued);
+        }
+
         CCycleTimer elapsedTimer;
         PROGLOG("Enqueuing on %s to run wuid=%s, graph=%s, timelimit=%d seconds, priority=%d", queueName.str(), wuid.str(), graphName, timelimit, priority);
-        VStringBuffer wuidGraph("%s/%s", wuid.str(), graphName);
-        IJobQueueItem* item = createJobQueueItem(wuidGraph.str());
+        IJobQueueItem* item = createJobQueueItem(jobName);
         item->setOwner(owner.str());
         item->setPriority(priority);
         Owned<IConversation> conversation = jq->initiateConversation(item);
@@ -14126,15 +14385,15 @@ void executeThorGraph(const char * graphName, IConstWorkUnit &workunit, const IP
         if (!got)
         {
             if (pollthread.timedout)
-                throw MakeStringException(0, "Query %s failed to start within specified timelimit (%u) seconds", wuidGraph.str(), timelimit);
-            throw MakeStringException(0, "Query %s cancelled (1)", wuidGraph.str());
+                throw MakeStringException(0, "Query %s failed to start within specified timelimit (%u) seconds", jobName.str(), timelimit);
+            throw MakeStringException(0, "Query %s cancelled (1)", jobName.str());
         }
         // get the thor ep from whoever picked up
 
         SocketEndpoint thorMaster;
         MemoryBuffer msg;
         if (!conversation->recv(msg,1000*60))
-            throw MakeStringException(0, "Query %s cancelled (2)", wuidGraph.str());
+            throw MakeStringException(0, "Query %s cancelled (2)", jobName.str());
         thorMaster.deserialize(msg);
         msg.clear();
         SocketEndpoint myep;
@@ -14152,7 +14411,7 @@ void executeThorGraph(const char * graphName, IConstWorkUnit &workunit, const IP
         }
 
         StringBuffer eps;
-        PROGLOG("Thor on %s running %s", thorMaster.getUrlStr(eps).str(), wuidGraph.str());
+        PROGLOG("Thor on %s running %s", thorMaster.getUrlStr(eps).str(), jobName.str());
         MemoryBuffer reply;
         try
         {
@@ -14183,7 +14442,7 @@ void executeThorGraph(const char * graphName, IConstWorkUnit &workunit, const IP
                 if (isException)
                 {
                     Owned<IException> e = deserializeException(reply);
-                    VStringBuffer str("Pausing job %s caused exception", wuidGraph.str());
+                    VStringBuffer str("Pausing job %s caused exception", jobName.str());
                     EXCLOG(e, str.str());
                 }
                 Owned<IWorkUnit> w = &workunit.lock();
@@ -14220,6 +14479,20 @@ void executeThorGraph(const char * graphName, IConstWorkUnit &workunit, const IP
 #endif
 }
 
+TraceFlags loadTraceFlags(IConstWorkUnit * wu, const std::initializer_list<TraceOption> & optNames, TraceFlags dft)
+{
+    for (auto &o: optNames)
+    {
+        if (wu->hasDebugValue(o.name))
+        {
+            if (wu->getDebugValueBool(o.name, false))
+                dft |= o.value;
+            else
+                dft &= ~o.value;
+        }
+    }
+    return dft;
+}
 
 #ifdef _CONTAINERIZED
 bool executeGraphOnLingeringThor(IConstWorkUnit &workunit, const char *graphName)
@@ -14444,6 +14717,7 @@ bool applyK8sYaml(const char *componentName, const char *wuid, const char *job, 
     jobYaml.replaceString("_HPCC_JOBNAME_", jobName.str());
 
     VStringBuffer args("\"--workunit=%s\"", wuid);
+    args.append(" \"--k8sJob=true\"");
     for (const auto &p: extraParams)
     {
         if (hasPrefix(p.first.c_str(), "_HPCC_", false)) // job yaml substitution
@@ -14561,6 +14835,47 @@ std::vector<std::vector<std::string>> getPodNodes(const char *selector)
             }
         }
     }
+}
+
+#else
+KeepK8sJobs translateKeepJobs(const char *keepJobs)
+{
+    throwUnexpected();
+}
+
+bool isActiveK8sService(const char *serviceName)
+{
+    throwUnexpected();
+}
+
+bool executeGraphOnLingeringThor(IConstWorkUnit &workunit, const char *graphName)
+{
+    throwUnexpected();
+}
+
+void deleteK8sResource(const char *componentName, const char *job, const char *resource)
+{
+    throwUnexpected();
+}
+
+void waitK8sJob(const char *componentName, const char *resourceType, const char *job, unsigned pendingTimeoutSecs, KeepK8sJobs keepJob)
+{
+    throwUnexpected();
+}
+
+bool applyK8sYaml(const char *componentName, const char *wuid, const char *job, const char *resourceType, const std::list<std::pair<std::string, std::string>> &extraParams, bool optional, bool autoCleanup)
+{
+    throwUnexpected();
+}
+
+void runK8sJob(const char *componentName, const char *wuid, const char *job, const std::list<std::pair<std::string, std::string>> &extraParams)
+{
+    throwUnexpected();
+}
+
+std::vector<std::vector<std::string>> getPodNodes(const char *selector)
+{
+    throwUnexpected();
 }
 
 #endif

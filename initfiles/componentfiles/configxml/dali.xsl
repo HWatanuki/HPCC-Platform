@@ -104,7 +104,14 @@
         </xsl:attribute>
       </xsl:if>
       <xsl:copy-of select="/Environment/Software/Directories"/>
-
+      <!--
+      # Generated for configuration info. accessed by getGlobalConfig()
+      -->
+      <global>
+        <expert>
+          <xsl:copy-of select="/Environment/Software/Globals/@* | /Environment/Software/Globals/*"/>
+        </expert>
+      </global>
       <xsl:if test="@authMethod='secmgrPlugin'">
       <SecurityManagers>
           <SecurityManager>
@@ -322,7 +329,7 @@
             </xsl:attribute>
 
             <xsl:for-each select="$ldapServerNode">
-              <xsl:copy-of select="@ldapPort | @ldapSecurePort | @ldapTimeoutSecs | @cacheTimeout | @workunitsBasedn | @modulesBasedn | @systemBasedn | @systemCommonName | @systemUser | @systemPassword | @usersBasedn | @groupsBasedn| @viewsBasedn | @serverType"/>
+              <xsl:copy-of select="@ldapPort | @ldapSecurePort | @ldapTimeoutSecs | @ldapCipherSuite | @cacheTimeout | @workunitsBasedn | @modulesBasedn | @systemBasedn | @systemCommonName | @systemUser | @systemPassword | @usersBasedn | @groupsBasedn| @viewsBasedn | @serverType"/>
             </xsl:for-each>
           </xsl:element>
         </xsl:if>

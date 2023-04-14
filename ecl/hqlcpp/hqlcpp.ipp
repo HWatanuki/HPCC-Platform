@@ -32,6 +32,9 @@
 #include "hqlusage.hpp"
 #include "eclrtl.hpp"
 
+#include <string>
+#include <unordered_map>
+
 #ifdef _DEBUG
 //#define SPOT_POTENTIAL_COMMON_ACTIVITIES
 #endif
@@ -51,6 +54,7 @@ enum {
     EclTextPrio = 1000,         // has no dependencies on anything else
     HashFunctionPrio = 1100,
     TypeInfoPrio = 1200,
+    RegexPatternPrio = 1300,
     RowMetaPrio = 1500,         
     XmlTransformerPrio = 1700,
     SteppedPrio = 1800,
@@ -841,6 +845,13 @@ struct HqlCppOptions
     bool                generateDiskFormats = false;
     bool                generateIR = false;
     bool                generateIRAfterTransform = false;
+    bool                allowStaticRegex = true;
+    bool                defaultStaticRegex = false;
+    bool                traceAll = false;
+    std::unordered_map<std::string, bool> traceOptions;
+
+public:
+    bool queryTrace(const char * option) const;
 };
 
 //Any information gathered while processing the query should be moved into here, rather than cluttering up the translator class
@@ -1160,6 +1171,8 @@ public:
     void noteXpathUsed(IHqlExpression * expr);
 
     HqlCppOptions const & queryOptions() const { return options; }
+    bool queryTrace(const char * option) const { return options.queryTrace(option); }
+
     bool needToSerializeToSlave(IHqlExpression * expr) const;
     void noteFinishedTiming(const char * name, cycle_t startCycles)
     {
@@ -1326,6 +1339,7 @@ public:
     void buildDatasetAssignAggregate(BuildCtx & ctx, IHqlCppDatasetBuilder * target, IHqlExpression * expr);
     void buildDatasetAssignChoose(BuildCtx & ctx, IHqlCppDatasetBuilder * target, IHqlExpression * expr);
     void buildDatasetAssignCombine(BuildCtx & ctx, IHqlCppDatasetBuilder * target, IHqlExpression * expr);
+    void buildDatasetAssignIf(BuildCtx & ctx, IHqlCppDatasetBuilder * target, IHqlExpression * expr);
     void buildDatasetAssignInlineTable(BuildCtx & ctx, IHqlCppDatasetBuilder * target, IHqlExpression * expr);
     void buildDatasetAssignDatasetFromTransform(BuildCtx & ctx, IHqlCppDatasetBuilder * target, IHqlExpression * expr);
     void buildDatasetAssignJoin(BuildCtx & ctx, IHqlCppDatasetBuilder * target, IHqlExpression * expr);
@@ -1488,6 +1502,7 @@ public:
     void doBuildStmtCall(BuildCtx & ctx, IHqlExpression * expr);
     void doBuildStmtCluster(BuildCtx & ctx, IHqlExpression * expr);
     void doBuildStmtEnsureResult(BuildCtx & ctx, IHqlExpression * expr);
+    void doBuildStmtExecuteWhen(BuildCtx & ctx, IHqlExpression * expr);
     void doBuildStmtFail(BuildCtx & ctx, IHqlExpression * expr);
     void doBuildStmtIf(BuildCtx & ctx, IHqlExpression * expr);
     void doBuildStmtNotify(BuildCtx & ctx, IHqlExpression * expr);
@@ -1638,6 +1653,7 @@ public:
     void gatherActiveCursors(BuildCtx & ctx, HqlExprCopyArray & activeRows);
 
     IHqlStmt * buildFilterViaExpr(BuildCtx & ctx, IHqlExpression * expr);
+    IHqlStmt * buildFilterViaSimpleExpr(BuildCtx & ctx, IHqlExpression * expr);
 
     void doBuildPureSubExpr(BuildCtx & ctx, IHqlExpression * expr, CHqlBoundExpr & tgt);
     void doBuildTempExprConcat(BuildCtx & ctx, IHqlExpression * expr, CHqlBoundExpr & tgt);
@@ -2043,9 +2059,9 @@ public:
     bool isLightweightQuery(WorkflowArray & workflow);
 
 public:
-    void traceExpression(const char * title, IHqlExpression * expr, unsigned level=500);
-    void traceExpressions(const char * title, HqlExprArray & exprs, unsigned level=500);
-    void traceExpressions(const char * title, WorkflowItem & workflow, unsigned level=500) { traceExpressions(title, workflow.queryExprs(), level); };
+    void traceExpression(const char * title, IHqlExpression * expr);
+    void traceExpressions(const char * title, HqlExprArray & exprs);
+    void traceExpressions(const char * title, WorkflowItem & workflow) { traceExpressions(title, workflow.queryExprs()); };
     void traceExpressions(const char * title, WorkflowArray & exprs);
 
     void checkNormalized(IHqlExpression * expr);

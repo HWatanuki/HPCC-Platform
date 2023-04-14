@@ -102,6 +102,7 @@ public:
 // IThorSlaveActivity
     virtual void init(MemoryBuffer &data, MemoryBuffer &slaveData);
     virtual void kill();
+    virtual void gatherActiveStats(CRuntimeStatisticCollection &activeStats) const;
     virtual void serializeStats(MemoryBuffer &mb);
 friend class CDiskPartHandlerBase;
 };
@@ -125,19 +126,18 @@ protected:
     unsigned usageCount;
     CDfsLogicalFileName dlfn;
     StringBuffer tempExternalName;
-    CriticalSection outputCs;  // Ensure outputIO remains valid for the duration of mergeStats()
-    CRuntimeStatisticCollection closedPartFileStats;
+    CFileUsageEntry * tmpUsage = nullptr;
 
     void open();
     void removeFiles();
     void close();
     virtual void write() = 0;
+    virtual void gatherActiveStats(CRuntimeStatisticCollection &activeStats) const;
 
 public:
     CDiskWriteSlaveActivityBase(CGraphElementBase *container);
     virtual void init(MemoryBuffer &data, MemoryBuffer &slaveData);
     virtual void abort();
-    virtual void serializeStats(MemoryBuffer &mb);
 
 // ICopyFileProgress
     virtual CFPmode onProgress(unsigned __int64 sizeDone, unsigned __int64 totalSize);

@@ -37,7 +37,7 @@ const FilterFields: Fields = {
     "EndDate": { type: "datetime", label: nlsHPCC.ToDate },
 };
 
-function formatQuery(_filter, mine, currentUser) {
+function formatQuery(_filter): { [id: string]: any } {
     const filter = { ..._filter };
     if (filter.Index) {
         filter.ContentType = "key";
@@ -49,9 +49,6 @@ function formatQuery(_filter, mine, currentUser) {
     if (filter.EndDate) {
         filter.EndDate = new Date(filter.StartDate).toISOString();
     }
-    if (mine === true) {
-        filter.Owner = currentUser?.username;
-    }
     return filter;
 }
 
@@ -62,11 +59,11 @@ const defaultUIState = {
 };
 
 interface ScopesProps {
-    filter?: object;
+    filter?: { [id: string]: any };
     scope?: any;
 }
 
-const emptyFilter = {};
+const emptyFilter: { [key: string]: any } = {};
 
 const mergeFileData = (DFULogicalFiles, files) => {
     const data = [];
@@ -78,7 +75,6 @@ const mergeFileData = (DFULogicalFiles, files) => {
     });
     files.forEach((file, idx) => {
         file["__hpcc_id"] = file.Name + "_" + idx;
-        file["Name"] = file.Name.split("::").pop();
         data.push(file);
     });
 
@@ -87,7 +83,7 @@ const mergeFileData = (DFULogicalFiles, files) => {
 
 export const Scopes: React.FunctionComponent<ScopesProps> = ({
     filter = emptyFilter,
-    scope
+    scope = "."
 }) => {
 
     const hasFilter = React.useMemo(() => Object.keys(filter).length > 0, [filter]);
@@ -102,34 +98,38 @@ export const Scopes: React.FunctionComponent<ScopesProps> = ({
     const [showRenameFile, setShowRenameFile] = React.useState(false);
     const [showAddToSuperfile, setShowAddToSuperfile] = React.useState(false);
     const [showDesprayFile, setShowDesprayFile] = React.useState(false);
-    const [mine, setMine] = React.useState(false);
     const { currentUser } = useMyAccount();
     const [viewByScope, setViewByScope] = React.useState(true);
     const [uiState, setUIState] = React.useState({ ...defaultUIState });
     const [, { currencyCode }] = useBuildInfo();
 
-    React.useEffect(() => {
+    const refreshData = React.useCallback(() => {
+        if (!scope) return;
         if (scope === ".") {
-            setScopePath([]);
             dfuService.DFUFileView({ Scope: "" }).then(async ({ DFULogicalFiles }) => {
                 const rootFiles = await dfuService.DFUFileView({ Scope: "." });
                 const files = rootFiles?.DFULogicalFiles?.DFULogicalFile ?? [];
                 setData(mergeFileData(DFULogicalFiles, files));
+                setScopePath([]);
             });
         } else {
-            setScopePath(scope.split("::"));
             dfuService.DFUFileView({ Scope: scope }).then(({ DFULogicalFiles }) => {
                 let files = DFULogicalFiles?.DFULogicalFile?.filter(file => !file.isDirectory) ?? [];
-                if (mine) {
+                if (filter.Owner === currentUser?.username) {
                     files = files.filter(file => file.Owner === currentUser?.username);
                 }
                 setData(mergeFileData(DFULogicalFiles, files));
+                setScopePath(scope.split("::"));
             });
         }
-    }, [currentUser, mine, scope]);
+    }, [currentUser.username, filter.Owner, scope]);
+
+    React.useEffect(() => {
+        refreshData();
+    }, [refreshData]);
 
     //  Grid ---
-    const { Grid, selection, refreshTable, copyButtons } = useFluentGrid({
+    const { Grid, selection, copyButtons } = useFluentGrid({
         data,
         primaryID: "__hpcc_id",
         filename: "logicalfiles",
@@ -164,7 +164,7 @@ export const Scopes: React.FunctionComponent<ScopesProps> = ({
             __hpcc_displayName: {
                 label: nlsHPCC.LogicalName, width: 600,
                 formatter: React.useCallback((_, row) => {
-                    let name = row.Name;
+                    let name = row.Name?.split("::").pop();
                     let url = `#/files/${row.NodeGroup ? row.NodeGroup + "/" : ""}${[].concat(".", scopePath, name).join("::")}`;
                     if (row.isDirectory) {
                         name = row.Directory;
@@ -212,15 +212,34 @@ export const Scopes: React.FunctionComponent<ScopesProps> = ({
         message: nlsHPCC.DeleteSelectedFiles,
         items: selection.filter(s => s.isDirectory === false).map(s => s.Name),
         onSubmit: React.useCallback(() => {
-            WsDfu.DFUArrayAction(selection, "Delete").then(() => refreshTable(true));
-        }, [refreshTable, selection])
+            WsDfu.DFUArrayAction(selection, "Delete").then(() => refreshData());
+        }, [refreshData, selection])
     });
+
+    const applyFilter = React.useCallback((params) => {
+        const query = formatQuery(params);
+        if (query["ScopeName"] && query["ScopeName"] !== ".") {
+            query["LogicalName"] = query["ScopeName"] + (query["LogicalName"] ? "::" + query["LogicalName"] + "*" : "*");
+        }
+        delete query["ScopeName"];
+
+        const keys = Object.keys(query);
+        const qs = keys.map(key => {
+            const val = query[key];
+            if (!!val) {
+                return `${key}=${val}`;
+            }
+            return "";
+        }).filter(pair => pair.length > 0).join("&");
+
+        pushUrl("/files/?" + qs);
+    }, []);
 
     //  Command Bar  ---
     const buttons = React.useMemo((): ICommandBarItemProps[] => [
         {
             key: "refresh", text: nlsHPCC.Refresh, iconProps: { iconName: "Refresh" },
-            onClick: () => refreshTable()
+            onClick: () => refreshData()
         },
         { key: "divider_1", itemType: ContextualMenuItemType.Divider, onRender: () => <ShortVerticalDivider /> },
         {
@@ -276,10 +295,17 @@ export const Scopes: React.FunctionComponent<ScopesProps> = ({
         },
         { key: "divider_5", itemType: ContextualMenuItemType.Divider, onRender: () => <ShortVerticalDivider /> },
         {
-            key: "mine", text: nlsHPCC.Mine, disabled: !currentUser, iconProps: { iconName: "Contact" }, canCheck: true, checked: mine,
-            onClick: () => setMine(!mine)
+            key: "mine", text: nlsHPCC.Mine, disabled: !currentUser?.username, iconProps: { iconName: "Contact" }, canCheck: true, checked: filter.Owner === currentUser.username,
+            onClick: () => {
+                if (filter.Owner === currentUser.username) {
+                    filter.Owner = "";
+                } else {
+                    filter.Owner = currentUser.username;
+                }
+                applyFilter(filter);
+            }
         },
-    ], [currentUser, data, hasFilter, mine, refreshTable, selection, setShowDeleteConfirm, uiState.hasSelection, viewByScope]);
+    ], [applyFilter, currentUser, data, filter, hasFilter, refreshData, selection, setShowDeleteConfirm, uiState.hasSelection, viewByScope]);
 
     //  Filter  ---
     React.useEffect(() => {
@@ -290,26 +316,6 @@ export const Scopes: React.FunctionComponent<ScopesProps> = ({
         _filterFields["ScopeName"].value = scope;
         setFilterFields(_filterFields);
     }, [filter, scope]);
-
-    const applyFilter = React.useCallback((params) => {
-        const query = formatQuery(params, mine, currentUser);
-
-        if (query["ScopeName"] !== ".") {
-            query["LogicalName"] = query["ScopeName"] + (query["LogicalName"] ? "::" + query["LogicalName"] : "");
-        }
-        delete query["ScopeName"];
-
-        const keys = Object.keys(query);
-        const qs = keys.map(key => {
-            const val = query[key];
-            if (!!val) {
-                return `${key}=${val}`;
-            }
-            return "";
-        }).filter(pair => pair.length > 0).join("&");
-
-        pushUrl("/files/?" + qs);
-    }, [currentUser, mine]);
 
     //  Selection  ---
     React.useEffect(() => {
@@ -340,10 +346,10 @@ export const Scopes: React.FunctionComponent<ScopesProps> = ({
                     </div>
                 }</SizeMe>
                 <Filter showFilter={showFilter} setShowFilter={setShowFilter} filterFields={filterFields} onApply={applyFilter} />
-                <RemoteCopy showForm={showRemoteCopy} setShowForm={setShowRemoteCopy} refreshGrid={refreshTable} />
-                <CopyFile logicalFiles={selection.filter(s => s.isDirectory === false).map(s => s.Name)} showForm={showCopy} setShowForm={setShowCopy} refreshGrid={refreshTable} />
-                <RenameFile logicalFiles={selection.filter(s => s.isDirectory === false).map(s => s.Name)} showForm={showRenameFile} setShowForm={setShowRenameFile} refreshGrid={refreshTable} />
-                <AddToSuperfile logicalFiles={selection.filter(s => s.isDirectory === false).map(s => s.Name)} showForm={showAddToSuperfile} setShowForm={setShowAddToSuperfile} refreshGrid={refreshTable} />
+                <RemoteCopy showForm={showRemoteCopy} setShowForm={setShowRemoteCopy} refreshGrid={refreshData} />
+                <CopyFile logicalFiles={selection.filter(s => s.isDirectory === false).map(s => s.Name)} showForm={showCopy} setShowForm={setShowCopy} refreshGrid={refreshData} />
+                <RenameFile logicalFiles={selection.filter(s => s.isDirectory === false).map(s => s.Name)} showForm={showRenameFile} setShowForm={setShowRenameFile} refreshGrid={refreshData} />
+                <AddToSuperfile logicalFiles={selection.filter(s => s.isDirectory === false).map(s => s.Name)} showForm={showAddToSuperfile} setShowForm={setShowAddToSuperfile} refreshGrid={refreshData} />
                 <DesprayFile logicalFiles={selection.filter(s => s.isDirectory === false).map(s => s.Name)} showForm={showDesprayFile} setShowForm={setShowDesprayFile} />
                 <DeleteConfirm />
             </>

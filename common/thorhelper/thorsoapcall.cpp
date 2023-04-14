@@ -464,6 +464,7 @@ public:
                 unsigned delay = 5000;
                 for (unsigned i = 0; i < BLACKLIST_RETRIES; i++)
                 {
+                    // DBGLOG("Trying to deblacklist");
                     try
                     {
                         Owned<ISocket> s = ISocket::connect_timeout(ep, 10000);
@@ -814,18 +815,20 @@ class CWSCHelper : implements IWSCHelper, public CInterface
 private:
     SimpleInterThreadQueueOf<const void, true> outputQ;
     SpinLock outputQLock;
-    CriticalSection toXmlCrit, transformCrit, onfailCrit, timeoutCrit;
+    CriticalSection toXmlCrit, transformCrit, onfailCrit;
     unsigned done;
     Owned<IPropertyTree> xpathHints;
     Linked<ClientCertificate> clientCert;
 
     static CriticalSection secureContextCrit;
-    static Owned<ISecureSocketContext> secureContext;
+    static Owned<ISecureSocketContext> tlsSecureContext;
+    static Owned<ISecureSocketContext> localMtlsSecureContext;
 
     Owned<ISecureSocketContext> customSecureContext;
 
     CTimeMon timeLimitMon;
-    bool complete, timeLimitExceeded;
+    bool complete;
+    std::atomic_bool timeLimitExceeded{false};
     bool customClientCert = false;
     bool localClientCert = false;
     IRoxieAbortMonitor * roxieAbortMonitor;
@@ -1137,7 +1140,9 @@ public:
     ISecureSocketContext *ensureStaticSecureContext()
     {
         CriticalBlock b(secureContextCrit);
-        return ensureSecureContext(secureContext);
+        if (localClientCert)
+            return ensureSecureContext(localMtlsSecureContext);
+        return ensureSecureContext(tlsSecureContext);
     }
     ISecureSocket *createSecureSocket(ISocket *sock, const char *fqdn = nullptr)
     {
@@ -1149,8 +1154,15 @@ public:
     {
         if (timeLimitMS != WAIT_FOREVER)
         {
-            CriticalBlock block(timeoutCrit);
-            if (timeLimitExceeded || timeLimitMon.timedout(_remainingMS))
+            //No need to protect with a critical section because it does not matter if more than one thread calls timedout
+            if (timeLimitExceeded)
+            {
+                if (_remainingMS)
+                    *_remainingMS = 0;
+                return true;
+            }
+
+            if (timeLimitMon.timedout(_remainingMS))
             {
                 timeLimitExceeded = true;
                 return true;
@@ -1265,7 +1277,9 @@ protected:
 };
 
 CriticalSection CWSCHelper::secureContextCrit;
-Owned<ISecureSocketContext> CWSCHelper::secureContext; // created on first use
+Owned<ISecureSocketContext> CWSCHelper::tlsSecureContext; // created on first use
+Owned<ISecureSocketContext> CWSCHelper::localMtlsSecureContext; // created on first use
+
 
 //=================================================================================================
 

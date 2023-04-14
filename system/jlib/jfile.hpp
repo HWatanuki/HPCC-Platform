@@ -132,6 +132,8 @@ interface IFile :extends IInterface
     virtual IMemoryMappedFile *openMemoryMapped(offset_t ofs=0, memsize_t len=(memsize_t)-1, bool write=false)=0;
 };
 
+extern jlib_decl void setRenameRetries(unsigned numRetries);
+
 struct CDirectoryEntry: public CInterface
 { // for cloning IDirectoryIterator iterator
 public:
@@ -390,10 +392,10 @@ public:
     const SocketEndpoint & queryEndpoint() const            { return ep; } // node containing file
     const IpAddress      & queryIP() const                  { return ep; }
     unsigned short getPort() const                          { return ep.port; }
-    bool isNull() const;                        
+    bool isNull() const;
 
     // the following overwrite previous contents
-    void set(const RemoteFilename & other);         
+    void set(const RemoteFilename & other);
     void setPath(const SocketEndpoint & _ep, const char * filename); // filename should be full windows or unix path (local)
     void setLocalPath(const char *name);                    // local path - can partial but on linux must be under \c$ or \d$
     void setRemotePath(const char * url,const char *local=NULL); // url should be full (share) path including ep
@@ -468,11 +470,33 @@ extern jlib_decl void removeIFileCreateHook(IRemoteFileCreateHook *);
 
 extern jlib_decl IFile * createIFile(const RemoteFilename & filename);
 
-// Hook mechanism for accessing files inside containers (eg zipfiles)
+interface IStorageApiInfo : implements IInterface
+{
+    virtual const char * getStorageType() const = 0;
+    virtual const char * queryStorageApiAccount(unsigned stripeNumber) const = 0;
+    virtual const char * queryStorageContainerName(unsigned stripeNumber) const = 0;
+    virtual StringBuffer & getSASToken(unsigned stripeNumber, StringBuffer & token) const = 0;
+};
+enum class ApiCopyStatus { NotStarted, Pending, Success, Failed, Aborted };
+interface IAPICopyClientOp : implements IInterface
+{
+    virtual void startCopy(const char *source) = 0;
+    virtual ApiCopyStatus getProgress(CDateTime & dateTime, int64_t & outputLength) = 0;
+    virtual ApiCopyStatus abortCopy() = 0;
+    virtual ApiCopyStatus getStatus() const = 0;
+};
 
+interface IAPICopyClient : implements IInterface
+{
+    virtual const char * name() const = 0;
+    virtual IAPICopyClientOp * startCopy(const char *srcPath, unsigned srcStripeNum,  const char *tgtPath, unsigned tgtStripeNum) const = 0;
+};
+
+// Hook mechanism for accessing files inside containers (eg zipfiles)
 interface IContainedFileHook: extends IInterface
 {
     virtual IFile * createIFile(const char *fileName) = 0;
+    virtual IAPICopyClient * getCopyApiClient(IStorageApiInfo * source, IStorageApiInfo * target) = 0;
 };
 extern jlib_decl void addContainedFileHook(IContainedFileHook *);
 extern jlib_decl void removeContainedFileHook(IContainedFileHook *);
@@ -629,7 +653,7 @@ extern jlib_decl bool mountDrive(const char *drv,const RemoteFilename &rfn); // 
 extern jlib_decl bool unmountDrive(const char *drv); // linux only currently
 
 extern jlib_decl IFileIO *createUniqueFile(const char *dir, const char *prefix, const char *ext, StringBuffer &tmpName, IFOmode mode=IFOcreate);
-
+extern jlib_decl IFile * writeToProtectedTempFile(const char * component, const char * prefix, size_t len, const void * data);
 
 // used by remote copy
 interface ICopyFileIntercept
@@ -649,7 +673,7 @@ extern jlib_decl void writeSentinelFile(IFile * file);
 extern jlib_decl void removeSentinelFile(IFile * file);
 extern jlib_decl StringBuffer & appendCurrentDirectory(StringBuffer & target, bool blankIfFails);
 extern jlib_decl timestamp_type getTimeStamp(IFile * file);
-
+extern jlib_decl IAPICopyClient * createApiCopyClient(IStorageApiInfo * source, IStorageApiInfo * target);
 #ifdef _WIN32
 const static bool filenamesAreCaseSensitive = false;
 #else

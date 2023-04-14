@@ -30,7 +30,7 @@
 #include "jmutex.hpp"
 #include "jfile.hpp"
 #include "jhtree.hpp"
-
+#include "jsecrets.hpp"
 
 #include "rtldynfield.hpp"
 #include "rtlds_imp.hpp"
@@ -49,7 +49,6 @@
 
 #include "rmtclient_impl.hpp"
 #include "rmtfile.hpp"
-
 
 //----------------------------------------------------------------------------
 

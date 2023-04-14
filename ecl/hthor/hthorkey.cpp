@@ -26,54 +26,14 @@
 #include "roxiedebug.hpp"
 #include "thorcommon.hpp"
 #include "rtldynfield.hpp"
+#include "thorfile.hpp"
 
 #define MAX_FETCH_LOOKAHEAD 1000
-#define MAX_FILE_READ_FAIL_COUNT 3
 
 using roxiemem::IRowManager;
 using roxiemem::OwnedRoxieRow;
 using roxiemem::OwnedConstRoxieRow;
 using roxiemem::OwnedRoxieString;
-
-static IKeyIndex *openKeyFile(IDistributedFilePart & keyFile)
-{
-    unsigned failcount = 0;
-    unsigned numCopies = keyFile.numCopies();
-    assertex(numCopies);
-    Owned<IException> exc;
-    for (unsigned copy=0; copy < numCopies && failcount < MAX_FILE_READ_FAIL_COUNT; copy++)
-    {
-        RemoteFilename rfn;
-        try
-        {
-            OwnedIFile ifile = createIFile(keyFile.getFilename(rfn,copy));
-            offset_t thissize = ifile->size();
-            if (thissize != (offset_t)-1)
-            {
-                StringBuffer remotePath;
-                rfn.getPath(remotePath);
-                unsigned crc = 0;
-                keyFile.getCrc(crc);
-                return createKeyIndex(remotePath.str(), crc, false);
-            }
-        }
-        catch (IException *E)
-        {
-            EXCLOG(E, "While opening index file");
-            if (exc)
-                E->Release();
-            else
-                exc.setown(E);
-            failcount++;
-        }
-    }
-    if (exc)
-        throw exc.getClear();
-    StringBuffer url;
-    RemoteFilename rfn;
-    keyFile.getFilename(rfn).getRemotePath(url);
-    throw MakeStringException(1001, "Could not open key file at %s%s", url.str(), (numCopies > 1) ? " or any alternate location." : ".");
-}
 
 class TransformCallback : public CInterface, implements IThorIndexCallback 
 {
@@ -85,14 +45,15 @@ public:
     virtual const byte * lookupBlob(unsigned __int64 id) override
     { 
         size32_t dummy; 
-        return (byte *) keyManager->loadBlob(id, dummy); 
+        return (byte *) keyManager->loadBlob(id, dummy, ctx); 
     }
 
 public:
-    void setManager(IKeyManager * _manager)
+    void setManager(IKeyManager * _manager, IContextLogger * _ctx)
     {
         finishedRow();
         keyManager = _manager;
+        ctx = _ctx;
     }
 
     void finishedRow()
@@ -102,7 +63,8 @@ public:
     }
 
 protected:
-    IKeyManager * keyManager;
+    IKeyManager * keyManager = nullptr;
+    IContextLogger * ctx = nullptr;
 };
 
 
@@ -615,12 +577,12 @@ void CHThorIndexReadActivityBase::initPart()
     assertex(!keyIndex->isTopLevelKey());
     klManager.setown(createLocalKeyManager(eclKeySize.queryRecordAccessor(true), keyIndex, NULL, helper.hasNewSegmentMonitors(), false));
     initManager(klManager, false);
-    callback.setManager(klManager);
+    callback.setManager(klManager, nullptr);
 }
 
 void CHThorIndexReadActivityBase::killPart()
 {
-    callback.setManager(NULL);
+    callback.setManager(nullptr, nullptr);
     if (klManager)
     {
         seeks += klManager->querySeeks();
@@ -774,7 +736,7 @@ void CHThorIndexReadActivityBase::verifyIndex(IKeyIndex * idx)
             keySize = idx->keySize();
             //The index rows always have the filepositions appended, but the ecl may not include a field
             unsigned fileposSize = idx->hasSpecialFileposition() && !hasTrailingFileposition(eclKeySize.queryTypeInfo()) ? sizeof(offset_t) : 0;
-            if (keySize != eclKeySize.getFixedSize() + fileposSize)
+            if (keySize != eclKeySize.getFixedSize() + fileposSize && !idx->isTopLevelKey())
                 throw MakeStringException(0, "Key size mismatch reading index %s: index indicates size %u, ECL indicates size %u", df->queryLogicalName(), keySize, eclKeySize.getFixedSize() + fileposSize);
         }
     }
@@ -893,7 +855,7 @@ bool CHThorIndexReadActivity::nextPart()
         klManager.setown(createKeyMerger(eclKeySize.queryRecordAccessor(true), keyIndexCache, seekGEOffset, NULL, helper.hasNewSegmentMonitors(), false));
         keyIndexCache.clear();
         initManager(klManager, false);
-        callback.setManager(klManager);
+        callback.setManager(klManager, nullptr);
         return true;
     }
     else if (seekGEOffset || localSortKey)
@@ -4061,7 +4023,8 @@ public:
                 agent.queryCodeContext()->queryDebugContext()->checkBreakpoint(DebugStateLimit, NULL, static_cast<IActivityBase *>(this));
             return true;
         }
-        KLBlobProviderAdapter adapter(manager);
+        IContextLogger * ctx = nullptr;
+        KLBlobProviderAdapter adapter(manager, ctx);
         byte const * rhs = manager->queryKeyBuffer();
         if(indexReadMatch(jg->queryLeft(), rhs, &adapter))
         {
@@ -4183,7 +4146,7 @@ protected:
             else
             {
                 unsigned fileposSize = idx->hasSpecialFileposition() && !hasTrailingFileposition(eclKeySize.queryTypeInfo()) ? sizeof(offset_t) : 0;
-                if(idx->keySize() != eclKeySize.getFixedSize() + fileposSize)
+                if(idx->keySize() != eclKeySize.getFixedSize() + fileposSize && !idx->isTopLevelKey())
                     throw MakeStringException(1002, "Key size mismatch on key %s: key file indicates record size should be %u, but ECL declaration was %u", f->queryLogicalName(), idx->keySize(), eclKeySize.getFixedSize() + fileposSize);
             }
         }

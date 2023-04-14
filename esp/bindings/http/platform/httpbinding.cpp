@@ -46,6 +46,7 @@
 #include "daclient.hpp"
 #include "workunit.hpp"
 #include "cumulativetimer.hpp"
+#include <memory>
 
 #define FILE_UPLOAD     "FileUploadAccess"
 #define DEFAULT_HTTP_PORT 80
@@ -113,6 +114,177 @@ static void setBndCfgServiceType(IPropertyTree* tree, const char* procName, IPro
         bndCfg->setProp("@serviceType", srvType);
 }
 
+class CEspCorsAllowedOrigin : public CInterfaceOf<IEspCorsAllowedOrigin>
+{
+    StringBuffer hostPort;
+    StringBuffer allowedMethodsCSV;
+    StringBuffer maxAge;
+
+    StringArray methods;
+    StringArray headers;
+
+    bool httpsOnly = false;
+    bool wildHostPort = false;
+    bool hasWildHeader = false; //optimize the case where no wild headers are configured
+
+    public:
+        void appendMethods(const char *methodCSV)
+        {
+            if (isEmptyString(methodCSV))
+                return;
+            methods.appendListUniq(methodCSV, ",");
+        }
+        void appendHeaders(const char *headerCSV)
+        {
+            if (isEmptyString(headerCSV))
+                return;
+            headers.appendListUniq(headerCSV, ",");
+            if (!hasWildHeader && isWildString(headerCSV))
+                hasWildHeader = true;
+        }
+        CEspCorsAllowedOrigin(IPropertyTree *allowed, const char *_origin)
+        {
+            StringBuffer scheme;
+            StringBuffer unused;
+            splitUrlIsolateScheme(_origin, unused, unused, scheme, hostPort, unused);
+
+            //Allow-Max-Age of 7200 (2 hours) matches the limit in chrome
+            const char *allowedMaxAge = allowed->queryProp("@maxAge");
+            maxAge.set(isEmptyString(allowedMaxAge) ? "7200" : allowed->queryProp("@maxAge"));
+
+            httpsOnly = strieq(scheme, "https://");
+            wildHostPort = isWildString(hostPort);
+
+            Owned<IPropertyTreeIterator> methodList = allowed->getElements("methods");
+            if (methodList->first())
+            {
+                ForEach(*methodList)
+                    appendMethods(methodList->get().queryProp("."));
+            }
+            else if (allowed->hasProp("@methods")) //configured as scalar rather than array
+                appendMethods(allowed->queryProp("@methods"));
+            else
+                appendMethods(allowed->queryProp("GET, POST, OPTIONS"));
+
+            //build allowedMethodsCSV to cache response header
+            ForEachItemIn(i, methods)
+            {
+                if (allowedMethodsCSV.length())
+                    allowedMethodsCSV.append(", ");
+                allowedMethodsCSV.append(methods.item(i));
+            }
+
+            Owned<IPropertyTreeIterator> headerList = allowed->getElements("headers");
+            if (headerList->first())
+            {
+                ForEach(*headerList)
+                    appendHeaders(headerList->get().queryProp("."));
+            }
+            else if (allowed->hasProp("@headers")) //configured as scalar rather than array
+                appendHeaders(allowed->queryProp("@headers"));
+            else
+            {
+                headers.append("*");
+                hasWildHeader = true;
+            }
+        }
+        virtual bool match(const char *origin, const char *method) const override
+        {
+            //scheme should be either "https://"" or "http://""
+            if (strnicmp(origin, "http", 4)!=0) //unknown scheme
+                return false;
+            bool isHttps = origin[4]=='s';
+            if (!isHttps && httpsOnly)
+                return false;
+            origin += (isHttps) ? 5 : 4;
+            if (strnicmp(origin, "://", 3)!=0) //unknown scheme
+                return false;
+            origin+=3;
+            bool match = false;
+            if (wildHostPort)
+                match = WildMatch(origin, hostPort, true);
+            else
+                match = strieq(origin, hostPort);
+            if (match && !isEmptyString(method))
+                match = methods.contains(method);
+            return match;
+        }
+        virtual const char *queryAllowedMethodsCSV() const override
+        {
+            return allowedMethodsCSV;
+        }
+        virtual bool isAllowedHeader(const char *header) const override
+        {
+            if (!hasWildHeader)
+                return headers.contains(header);
+            ForEachItemIn(i, headers)
+            {
+                if (WildMatch(header, headers.item(i)))
+                    return true;
+                if (streq(header, headers.item(i)))
+                    return true;
+            }
+            return false;
+        }
+        virtual const char *getAllowedHeadersCSV(const char *requestedHeaders, StringBuffer &allowedHeadersCSV) const override
+        {
+            StringArray requested;
+            requested.appendListUniq(requestedHeaders, ",");
+            ForEachItemIn(i, requested)
+            {
+                const char *requestedHeader = requested.item(i);
+                if (isAllowedHeader(requestedHeader))
+                {
+                    if (allowedHeadersCSV.length())
+                        allowedHeadersCSV.append(", ");
+                    allowedHeadersCSV.append(requestedHeader);
+                }
+            }
+            return allowedMethodsCSV.str();
+        }
+        virtual const char *queryMaxAge() const override
+        {
+            return maxAge;
+        }
+};
+
+class CEspCorsHelper : public CInterfaceOf<IEspCorsHelper>
+{
+    private:
+        IArrayOf<IEspCorsAllowedOrigin> allowed;
+
+    public:
+        CEspCorsHelper(IPropertyTree *cors)
+        {
+            if (!cors)
+                return;
+            Owned<IPropertyTreeIterator> corsAllowed = cors->getElements("allowed");
+            ForEach(*corsAllowed)
+            {
+                const char *origin = corsAllowed->query().queryProp("@origin");
+                if (isEmptyString(origin))
+                    continue;
+                Owned<IEspCorsAllowedOrigin> allowedOrigin = new CEspCorsAllowedOrigin(&corsAllowed->query(), origin);
+                allowed.append(*allowedOrigin.getClear());
+            }
+        }
+        virtual const IEspCorsAllowedOrigin *find(const char *origin, const char *method) const override
+        {
+            ForEachItemIn(i, allowed)
+            {
+                if (allowed.item(i).match(origin, method))
+                    return &allowed.item(i);
+            }
+            return nullptr;
+        }
+
+};
+
+IEspCorsHelper *createEspCorsHelper(IPropertyTree *cors)
+{
+    return new CEspCorsHelper(cors);
+}
+
 EspHttpBinding::EspHttpBinding(IPropertyTree* tree, const char *bindname, const char *procname)
 {
     Owned<IPropertyTree> proc_cfg = getProcessConfig(tree, procname);
@@ -123,6 +295,7 @@ EspHttpBinding::EspHttpBinding(IPropertyTree* tree, const char *bindname, const 
     m_configFile.set(tree ? tree->queryProp("@config") : "esp.xml");
     Owned<IPropertyTree> bnd_cfg = getBindingConfig(tree, bindname, procname);
     m_wsdlVer=0.0;
+    processName.set(procname);
 
     // get the config default version
     const char* defVersion = bnd_cfg->queryProp("@defaultServiceVersion");
@@ -191,7 +364,8 @@ EspHttpBinding::EspHttpBinding(IPropertyTree* tree, const char *bindname, const 
         }
         if (strnicmp(m_wsdlAddress.str(), "http", 4))
             m_wsdlAddress.insert(0, (m_port!=443) ? "http://" : "https://");
-        
+
+        corsHelper.setown(createEspCorsHelper(bnd_cfg->queryPropTree("cors")));
         Owned<IPropertyTree> authcfg = bnd_cfg->getPropTree("Authenticate");
         if(authcfg != NULL)
         {
@@ -283,17 +457,25 @@ EspHttpBinding::EspHttpBinding(IPropertyTree* tree, const char *bindname, const 
 
     setUnrestrictedSSTypes();
 
+    const char* authDomain = bnd_cfg->queryProp("@authDomain");
+    if (!isEmptyString(authDomain))
+        domainName.set(authDomain);
+    else
+        domainName.set("default");
+
     //Even for non-session based environment, the sessionIDCookieName may be used to
     //remove session related cookies cached in some browser page.
     sessionIDCookieName.setf("%s%d", SESSION_ID_COOKIE, m_port);
     if (!m_secmgr.get() || !daliClientActive())
     {
-        if (!daliClientActive())
+        VStringBuffer xpath("AuthDomains/AuthDomain[@domainName=\"%s\"]", domainName.get());
+        IPropertyTree* authDomainTree = proc_cfg->queryPropTree(xpath);
+        if (!daliClientActive() && authDomainTree)
         {
-            if (proc_cfg->hasProp("AuthDomains"))
-                throw MakeStringException(-1, "ESP cannot have an 'AuthDomains' setting because no dali connection is available.");
-            if (bnd_cfg->hasProp("@authDomain"))
-                throw MakeStringException(-1, "ESP Binding %s cannot have an '@authDomain' setting because no dali connection is available.", bindname);
+            const char* authType = authDomainTree->queryProp("@authType");
+            // Missing authType is assumed to be AuthTypeMixed - see readAuthDomainCfg()
+            if (isEmptyString(authType) || !strieq(authType, "AuthPerRequestOnly"))
+                throw MakeStringException(-1, "ESP binding %s cannot use AuthDomain named '%s'. Since no dali is active only AuthPerRequestOnly domains are allowed.", bindname, domainName.str());
         }
 
         domainAuthType = AuthPerRequestOnly;
@@ -326,13 +508,6 @@ EspHttpBinding::EspHttpBinding(IPropertyTree* tree, const char *bindname, const 
         }
         return;
     }
-
-    processName.set(procname);
-    const char* authDomain = bnd_cfg->queryProp("@authDomain");
-    if (!isEmptyString(authDomain))
-        domainName.set(authDomain);
-    else
-        domainName.set("default");
 
     readAuthDomainCfg(proc_cfg);
 
@@ -704,8 +879,13 @@ bool EspHttpBinding::doAuth(IEspContext* ctx)
 {
     if(m_authtype.length() == 0 || stricmp(m_authtype.str(), "Basic") == 0)
     {
-        CumulativeTimer* timer = ctx->queryTraceSummaryCumulativeTimer(LogNormal, "custom_fields.basicAuthTime", TXSUMMARY_GRP_ENTERPRISE);
-        CumulativeTimer::Scope authScope(timer);
+        static const char* timerName = "custom_fields.basicAuthTime";
+        CumulativeTimer* timer = ctx->queryTraceSummaryCumulativeTimer(LogNormal, timerName, TXSUMMARY_GRP_ENTERPRISE);
+        std::unique_ptr<CumulativeTimer::Scope> authScope;
+        if (timer)
+            authScope.reset(new CumulativeTimer::Scope(timer));
+        else
+            IWARNLOG("'%s' is an invalid cumulative timer name; check for duplicate use", timerName);
 
         ctx->addTraceSummaryTimeStamp(LogMin, "custom_fields.authStart", TXSUMMARY_GRP_ENTERPRISE);
         bool result = basicAuth(ctx);

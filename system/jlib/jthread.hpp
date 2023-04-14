@@ -25,6 +25,7 @@
 #include "jexcept.hpp"
 #include "jhash.hpp"
 #include <functional>
+#include "jtrace.hpp"
 
 #ifdef _WIN32
 #define DEFAULT_THREAD_PRIORITY THREAD_PRIORITY_NORMAL
@@ -75,6 +76,7 @@ public:
 
 class jlib_decl Thread : public CInterface, public IThread
 {
+friend class CThreadedPersistent;
 private:
     ThreadId threadid;
     unsigned short stacksize; // in 4K blocks
@@ -96,6 +98,8 @@ private:
 
 protected:
     StringAttr cthreadname;
+    const IContextLogger *logctx = nullptr;
+    TraceFlags traceFlags = queryDefaultTraceFlags();
 public:
 #ifndef _WIN32
     Semaphore suspend;
@@ -116,6 +120,8 @@ public:
     const char *getName() { return cthreadname.isEmpty() ? "unknown" : cthreadname.str(); }
     bool isAlive() { return alive; }
     bool join(unsigned timeout=INFINITE);
+    void getThreadLoggingInfo();                    // Capture current thread logging context to be used by this thread when started
+    void setThreadLoggingInfo(const IContextLogger * _logctx, TraceFlags _traceFlags);  // Set a specified thread logging context to be used when this thread is started
 
     virtual void start();
     virtual void startRelease();        
@@ -171,7 +177,6 @@ class jlib_decl CThreadedPersistent
     std::atomic_uint state;
     bool halt;
     enum ThreadStates { s_ready, s_running, s_joining };
-
     void threadmain();
 public:
     CThreadedPersistent(const char *name, IThreaded *_owner);
@@ -263,6 +268,8 @@ interface IThreadPool : extends IInterface
         virtual PooledThreadHandle startNoBlock(void *param)=0; // starts a new thread if it can do so without blocking, else throws exception
         virtual void setStartDelayTracing(unsigned secs) = 0;        // set start delay tracing period
         virtual bool waitAvailable(unsigned timeout) = 0;            // wait until a pool member is available
+        virtual void getThreadLoggingInfo() = 0;                     // Capture current thread logging context to be used by thread in pool when started
+        virtual void setThreadLoggingInfo(const IContextLogger * _logctx, TraceFlags _traceFlags) = 0;  // Set a specified thread logging context to be used by thredas in pool when started
 };
 
 extern jlib_decl IThreadPool *createThreadPool(
@@ -314,9 +321,28 @@ interface IPipeProcess: extends IInterface
     virtual void notifyTerminated(HANDLE pid,unsigned retcode) = 0; // internal
     virtual HANDLE getProcessHandle() = 0;                          // used to auto kill
     virtual void setenv(const char *var, const char *value) = 0;  // Set a value to be passed in the called process environment
+    virtual void setAllowTrace() = 0;                               // Allow child process to trace me
 };
 
 extern jlib_decl IPipeProcess *createPipeProcess(const char *allowedprograms=NULL);
+
+//--------------------------------------------------------
+
+class jlib_decl PerfTracer
+{
+    Owned<IPipeProcess> pipe;
+    double interval = 0.2;
+    StringBuffer result;
+public:
+    void start();
+    void stop();
+    void traceFor(unsigned seconds);
+    StringBuffer &queryResult() { return result; }
+    void setInterval(double _interval);  // In seconds
+private:
+    void dostart(unsigned seconds);
+    void dostop();
+};
 
 //--------------------------------------------------------
 

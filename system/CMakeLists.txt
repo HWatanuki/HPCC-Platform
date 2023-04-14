@@ -17,7 +17,6 @@
 HPCC_ADD_SUBDIRECTORY (include)
 HPCC_ADD_SUBDIRECTORY (jhtree)
 HPCC_ADD_SUBDIRECTORY (jlib)
-HPCC_ADD_SUBDIRECTORY (azure)
 
 if (NOT JLIB_ONLY)
    HPCC_ADD_SUBDIRECTORY (logaccess)
@@ -26,6 +25,7 @@ if (NOT JLIB_ONLY)
    HPCC_ADD_SUBDIRECTORY (security)
    HPCC_ADD_SUBDIRECTORY (xmllib)
    HPCC_ADD_SUBDIRECTORY (xmllibtest "PLATFORM")
+   HPCC_ADD_SUBDIRECTORY (masking)
    
    if (USE_AERON)
       project (aeron_include)

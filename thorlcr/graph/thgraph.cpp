@@ -635,10 +635,15 @@ bool CGraphElementBase::prepareContext(size32_t parentExtractSz, const byte *par
         {
             if (prepared)
                 return true;
+
             ForEachItemIn(i, inputs)
             {
-                if (!queryInput(i)->prepareContext(parentExtractSz, parentExtract, false, false, async, true))
-                    return false;
+                CGraphElementBase *input = queryInput(i);
+                if (input)
+                {
+                    if (!input->prepareContext(parentExtractSz, parentExtract, false, false, async, true))
+                        return false;
+                }
             }
         }
         else
@@ -763,17 +768,22 @@ bool CGraphElementBase::prepareContext(size32_t parentExtractSz, const byte *par
             }
             if (checkDependencies && ((unsigned)-1 != whichBranch))
             {
-                if (inputs.queryItem(whichBranch))
+                CGraphElementBase *whichInput = queryInput(whichBranch);
+                if (whichInput)
                 {
-                    if (!queryInput(whichBranch)->prepareContext(parentExtractSz, parentExtract, true, false, async, connectOnly))
+                    if (!whichInput->prepareContext(parentExtractSz, parentExtract, true, false, async, connectOnly))
                         return false;
                 }
                 ForEachItemIn(i, inputs)
                 {
                     if (i != whichBranch)
                     {
-                        if (!queryInput(i)->prepareContext(parentExtractSz, parentExtract, false, false, async, true))
-                            return false;
+                        CGraphElementBase *input = queryInput(i);
+                        if (input)
+                        {
+                            if (!input->prepareContext(parentExtractSz, parentExtract, false, false, async, true))
+                                return false;
+                        }
                     }
                 }
             }
@@ -781,8 +791,12 @@ bool CGraphElementBase::prepareContext(size32_t parentExtractSz, const byte *par
             {
                 ForEachItemIn(i, inputs)
                 {
-                    if (!queryInput(i)->prepareContext(parentExtractSz, parentExtract, checkDependencies, false, async, connectOnly))
-                        return false;
+                    CGraphElementBase *input = queryInput(i);
+                    if (input)
+                    {
+                        if (!input->prepareContext(parentExtractSz, parentExtract, checkDependencies, false, async, connectOnly))
+                            return false;
+                    }
                 }
             }
         }
@@ -828,7 +842,7 @@ void CGraphElementBase::createActivity()
     if (activity)
         return;
     activity.setown(factory());
-    activityCodeContext.setStats(&activity->queryStats());
+    activityCodeContext.setStats(activity->queryStatsMapping());
     if (isSink())
         owner->addActiveSink(*this);
 }
@@ -2271,14 +2285,16 @@ IThorGraphResults *CGraphBase::createThorGraphResults(unsigned num)
 
 ////
 
-void CGraphTempHandler::registerFile(const char *name, graph_id graphId, unsigned usageCount, bool temp, WUFileKind fileKind, StringArray *clusters)
+CFileUsageEntry * CGraphTempHandler::registerFile(const char *name, graph_id graphId, unsigned usageCount, bool temp, WUFileKind fileKind, StringArray *clusters)
 {
     assertex(temp);
     LOG(MCdebugProgress, thorJob, "registerTmpFile name=%s, usageCount=%d", name, usageCount);
     CriticalBlock b(crit);
     if (tmpFiles.find(name))
         throw MakeThorException(TE_FileAlreadyUsedAsTempFile, "File already used as temp file (%s)", name);
-    tmpFiles.replace(* new CFileUsageEntry(name, graphId, fileKind, usageCount));
+    CFileUsageEntry *fileEntry = new CFileUsageEntry(name, graphId, fileKind, usageCount);
+    tmpFiles.replace(*fileEntry);
+    return fileEntry;
 }
 
 void CGraphTempHandler::deregisterFile(const char *name, bool kept)
@@ -2327,6 +2343,22 @@ void CGraphTempHandler::clearTemps()
     tmpFiles.kill();
 }
 
+void CGraphTempHandler::serializeUsageStats(MemoryBuffer &mb, graph_id gid)
+{
+    CriticalBlock b(crit);
+    Owned<IFileUsageIterator> iter = getIterator();
+    offset_t activeSpillSize = 0;
+    offset_t graphSpillSize = 0;
+    ForEach(*iter)
+    {
+        CFileUsageEntry &entry = iter->query();
+        if (entry.queryGraphId() == gid)
+            graphSpillSize += entry.getSize();
+        activeSpillSize += entry.getSize();
+    }
+    mb.append(graphSpillSize);
+    mb.append(activeSpillSize);
+}
 /////
 
 class CGraphExecutor;
@@ -2616,11 +2648,17 @@ public:
         if (globals->hasProp("@httpGlobalIdHeader"))
             setHttpIdHeaders(globals->queryProp("@httpGlobalIdHeader"), globals->queryProp("@httpCallerIdHeader"));
     }
-    virtual void CTXLOGva(const char *format, va_list args) const __attribute__((format(printf,2,0)))
+    virtual void CTXLOG(const char *format, ...) const override  __attribute__((format(printf,2,3))) 
     {
-        StringBuffer ss;
-        ss.valist_appendf(format, args);
-        LOG(MCdebugProgress, thorJob, "%s", ss.str());
+        va_list args;
+        va_start(args, format);
+        CTXLOGva(MCdebugProgress, thorJob, NoLogMsgCode, format, args);
+        va_end(args);
+    }
+
+    virtual void CTXLOGva(const LogMsgCategory & cat, const LogMsgJobInfo & job, LogMsgCode code, const char *format, va_list args) const override  __attribute__((format(printf,5,0))) 
+    {
+        VALOG(cat, job, code, format, args);
     }
     virtual void logOperatorExceptionVA(IException *E, const char *file, unsigned line, const char *format, va_list args) const __attribute__((format(printf,5,0)))
     {
@@ -2829,14 +2867,12 @@ void CJobBase::startJob()
     unsigned keyNodeCacheMB = getWorkUnitValueInt("keyNodeCacheMB", DEFAULT_KEYNODECACHEMB * queryJobChannels());
     unsigned keyLeafCacheMB = getWorkUnitValueInt("keyLeafCacheMB", DEFAULT_KEYLEAFCACHEMB * queryJobChannels());
     unsigned keyBlobCacheMB = getWorkUnitValueInt("keyBlobCacheMB", DEFAULT_KEYBLOBCACHEMB * queryJobChannels());
-    bool legacyNodeCache = getWorkUnitValueBool("legacyNodeCache", false);
     keyNodeCacheBytes = ((memsize_t)0x100000) * keyNodeCacheMB;
     keyLeafCacheBytes = ((memsize_t)0x100000) * keyLeafCacheMB;
     keyBlobCacheBytes = ((memsize_t)0x100000) * keyBlobCacheMB;
     setNodeCacheMem(keyNodeCacheBytes);
     setLeafCacheMem(keyLeafCacheBytes);
     setBlobCacheMem(keyBlobCacheBytes);
-    setLegacyNodeCache(legacyNodeCache);
     PROGLOG("Key node caching setting: node=%u MB, leaf=%u MB, blob=%u MB", keyNodeCacheMB, keyLeafCacheMB, keyBlobCacheMB);
 
     unsigned keyFileCacheLimit = (unsigned)getWorkUnitValueInt("keyFileCacheLimit", 0);
@@ -2854,6 +2890,10 @@ void CJobBase::startJob()
         else
             IWARNLOG("Failed to capture process stacks: %s", output.str());
     }
+
+    constexpr unsigned defaultNumRenameRetries = 10;
+    unsigned numRenameRetries = getOptInt64("numRenameRetries", getGlobalConfigSP()->getPropInt("expert/@numRenameRetries", defaultNumRenameRetries));
+    setRenameRetries(numRenameRetries);
 }
 
 void CJobBase::endJob()
@@ -3211,8 +3251,8 @@ IThorResource &queryThor()
 //
 //
 
-CActivityBase::CActivityBase(CGraphElementBase *_container, const StatisticsMapping &statsMapping)
-    : container(*_container), timeActivities(_container->queryJob().queryTimeActivities()), stats(statsMapping)
+CActivityBase::CActivityBase(CGraphElementBase *_container, const StatisticsMapping &_statsMapping)
+    : container(*_container), timeActivities(_container->queryJob().queryTimeActivities()), statsMapping(_statsMapping)
 {
     mpTag = TAG_NULL;
     abortSoon = receiving = cancelledReceive = initialized = reInit = false;

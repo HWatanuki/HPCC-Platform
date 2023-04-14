@@ -167,18 +167,18 @@ EspHttpBinding* CEspHttpServer::getBinding()
     return thebinding;
 }
 
-//CORS allow headers for interoperability, we do not rely on this for security since
-//that only means treating the browser as a trusted entity.  We need to be diligent and secure
-//for every request whether it comes from a cross domain browser or any other source
-
-void checkSetCORSAllowOrigin(CHttpRequest *req, CHttpResponse *resp)
+void checkSetCORSAllowOrigin(EspHttpBinding *binding, CHttpRequest *req, CHttpResponse *resp)
 {
     StringBuffer origin;
     req->getHeader("Origin", origin);
     if (origin.length())
     {
-        resp->setHeader("Access-Control-Allow-Origin", origin);
-        resp->setHeader("Access-Control-Allow-Credentials", "true");
+        const IEspCorsAllowedOrigin *corsAllowed = binding->findCorsAllowedOrigin(origin, req->queryMethod());
+        if (corsAllowed)
+        {
+            resp->setHeader("Access-Control-Allow-Origin", origin);
+            resp->setHeader("Access-Control-Allow-Credentials", "true");
+        }
     }
 }
 
@@ -375,7 +375,7 @@ int CEspHttpServer::processRequest()
             if (thebinding)
                 theBindingHolder.set(dynamic_cast<IInterface*>(thebinding));
 
-            checkSetCORSAllowOrigin(m_request, m_response);
+            checkSetCORSAllowOrigin(thebinding, m_request, m_response);
 
             if (thebinding!=NULL)
             {
@@ -720,6 +720,9 @@ static bool checkHttpPathStaysWithinBounds(const char *path)
 {
     if (!path || !*path)
         return true;
+    //The path that follows /esp/files should be relative, not absolute - reject immediately if it is.
+    if (isAbsolutePath(path))
+        return false;
     int depth = 0;
     StringArray nodes;
     nodes.appendList(path, "/");
@@ -750,7 +753,7 @@ int CEspHttpServer::onGetFile(CHttpRequest* request, CHttpResponse* response, co
 
         if (!checkHttpPathStaysWithinBounds(urlpath))
         {
-            DBGLOG("Get File %s: attempted access outside of %s", urlpath, basedir.str());
+            AERRLOG("Get File %s: attempted access outside of %s", urlpath, basedir.str());
             response->setStatus(HTTP_STATUS_NOT_FOUND);
             response->send();
             return 0;
@@ -845,21 +848,38 @@ int CEspHttpServer::onOptions()
     m_response->setVersion(HTTP_VERSION);
     m_response->setStatus(HTTP_STATUS_OK);
 
-    //CORS allow headers for interoperability, we do not rely on this for security since
-    //that only means treating the browser as a trusted entity.  We need to be diligent and secure
-    //for every request whether it comes from a cross domain browser or any other source
-    StringBuffer allowHeaders;
-    m_request->getHeader("Access-Control-Request-Headers", allowHeaders);
-    if (allowHeaders.length())
-        m_response->setHeader("Access-Control-Allow-Headers", allowHeaders);
-
     StringBuffer origin;
     m_request->getHeader("Origin", origin);
 
-    m_response->setHeader("Access-Control-Allow-Origin", origin.length() ? origin.str() : "*");
-    m_response->setHeader("Access-Control-Allow-Credentials", "true");
-    m_response->setHeader("Access-Control-Allow-Methods", "POST, GET, OPTIONS");
-    m_response->setHeader("Access-Control-Max-Age", "86400"); //arbitrary 24 hours
+    if (origin.length())
+    {
+        EspHttpBinding *binding = getBinding();
+        if (binding)
+        {
+            StringBuffer allowMethod;
+            m_request->getHeader("Access-Control-Request-Method", allowMethod);
+
+            const IEspCorsAllowedOrigin *corsAllowed = binding->findCorsAllowedOrigin(origin, allowMethod);
+            if (corsAllowed)
+            {
+                m_response->setHeader("Access-Control-Allow-Origin", origin);
+                m_response->setHeader("Access-Control-Allow-Credentials", "true");
+                m_response->setHeader("Access-Control-Allow-Methods", corsAllowed->queryAllowedMethodsCSV());
+                m_response->setHeader("Access-Control-Max-Age", corsAllowed->queryMaxAge());
+
+                StringBuffer requestedAllowHeaders;
+                m_request->getHeader("Access-Control-Request-Headers", requestedAllowHeaders);
+                if (requestedAllowHeaders.length())
+                {
+                    StringBuffer allowedHeaders;
+                    corsAllowed->getAllowedHeadersCSV(requestedAllowHeaders, allowedHeaders);
+                    if (allowedHeaders.length())
+                        m_response->setHeader("Access-Control-Allow-Headers", allowedHeaders);
+                }
+            }
+        }
+    }
+
     m_response->setContentType("text/plain");
     m_response->setContent("");
 
@@ -1501,7 +1521,14 @@ EspAuthState CEspHttpServer::checkUserAuthPerSession(EspAuthRequest& authReq, St
     const char* userName = (authReq.requestParams) ? authReq.requestParams->queryProp("username") : NULL;
     const char* password = (authReq.requestParams) ? authReq.requestParams->queryProp("password") : NULL;
     if (!isEmptyString(userName) && !isEmptyString(password))
-        return authNewSession(authReq, userName, password, urlCookie.isEmpty() ? "/" : urlCookie.str(), unlock);
+    {
+        const char *url = "/";
+        //if the cookie came from us it would be encoded, but check for newline just in case the cookie was injected somehow
+        //  unescaped newlines can be made to look like nefarious http headers
+        if (!urlCookie.isEmpty() && !strchr(urlCookie, '\n'))
+            url = urlCookie.str();
+        return authNewSession(authReq, userName, password, url, unlock);
+    }
 
     authReq.ctx->setAuthStatus(AUTH_STATUS_FAIL);
     if (unlock)
@@ -1858,7 +1885,8 @@ void CEspHttpServer::sendSessionReloadHTMLPage(IEspContext* ctx, EspAuthRequest&
     else
         espURL.set("http://");
     m_request->getHost(espURL);
-    espURL.append(":").append(m_request->getPort());
+    if (m_request->getHasPortInHost())
+        espURL.append(":").append(m_request->getPort());
 
     StringBuffer content(
         "<!DOCTYPE html>"
@@ -2174,6 +2202,7 @@ EspAuthState CEspHttpServer::handleAuthFailed(bool sessionAuth, EspAuthRequest& 
 
 void CEspHttpServer::askUserLogin(EspAuthRequest& authReq, const char* msg)
 {
+    StringBuffer encoded;
     StringBuffer urlCookie;
     readCookie(SESSION_START_URL_COOKIE, urlCookie);
     if (urlCookie.isEmpty())
@@ -2184,18 +2213,18 @@ void CEspHttpServer::askUserLogin(EspAuthRequest& authReq, const char* msg)
         if (sessionStartURL.isEmpty() || streq(sessionStartURL.str(), "/WsSMC/") || strieq(sessionStartURL, authReq.authBinding->queryLoginURL()))
             sessionStartURL.set("/");
 
-        addCookie(SESSION_START_URL_COOKIE, sessionStartURL.str(), 0, true); //time out when browser is closed
+        addCookie(SESSION_START_URL_COOKIE, encodeURL(encoded.clear(), sessionStartURL.str()), 0, true); //time out when browser is closed
     }
     else if (changeRedirectURL(authReq))
     {
         StringBuffer sessionStartURL(authReq.httpPath);
         if (authReq.requestParams && authReq.requestParams->hasProp("__querystring"))
             sessionStartURL.append("?").append(authReq.requestParams->queryProp("__querystring"));
-        addCookie(SESSION_START_URL_COOKIE, sessionStartURL.str(), 0, true); //time out when browser is closed
+        addCookie(SESSION_START_URL_COOKIE, encodeURL(encoded.clear(), sessionStartURL.str()), 0, true); //time out when browser is closed
     }
     if (!isEmptyString(msg))
         addCookie(SESSION_AUTH_MSG_COOKIE, msg, 0, false); //time out when browser is closed
-    m_response->redirect(*m_request, authReq.authBinding->queryLoginURL());
+    m_response->redirect(*m_request, encodeURL(encoded.clear(), authReq.authBinding->queryLoginURL()));
 }
 
 bool CEspHttpServer::changeRedirectURL(EspAuthRequest& authReq)

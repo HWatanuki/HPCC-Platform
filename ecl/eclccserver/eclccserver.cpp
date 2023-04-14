@@ -157,7 +157,7 @@ public:
                 if (timedOut || wu->aborting())
                 {
                     CriticalBlock b(crit);
-                    DBGLOG("Aborting compilation");
+                    DBGLOG("Aborting compilation after %ums (%s)", msTick() - start, timedOut ? "timed out" : "aborted");
                     ForEachItemIn(idx, pipes)
                     {
                         IPipeProcess *pipe = pipes.item(idx);
@@ -512,12 +512,21 @@ class EclccCompileThread : implements IPooledThread, implements IErrorReporter, 
             ForEachItemIn(i, errors)
                 addWorkunitException(workunit, &errors.item(i), false);
 
-            VStringBuffer failText("Compile/Link failed for %s (see %s for details)",wuid,cclogfileName.str());
             Owned<IWUException> msg = workunit->createException();
             msg->setExceptionSource("eclccserver");
             msg->setExceptionCode(3000);
-            msg->setExceptionMessage(failText);
-            msg->setSeverity(SeverityError);
+            if (numFailed != 0)
+            {
+                VStringBuffer failText("Compile/Link failed for %s (see %s for details)",wuid,cclogfileName.str());
+                msg->setExceptionMessage(failText);
+                msg->setSeverity(SeverityError);
+            }
+            else
+            {
+                VStringBuffer failText("Compile/Link for %s generated warnings (see %s for details)",wuid,cclogfileName.str());
+                msg->setExceptionMessage(failText);
+                msg->setSeverity(SeverityWarning);
+            }
         }
         return numFailed;
     }
@@ -641,6 +650,9 @@ class EclccCompileThread : implements IPooledThread, implements IErrorReporter, 
         eclccCmd.appendf(" --component=%s", queryStatisticsComponentName());
         eclccCmd.appendf(" --fetchrepos=1 --updaterepos=1");  // Default these options on in eclccserver (can be overridden in debug options)
 
+        if (workunit->getDebugValueBool("createQueryArchive", config->getPropBool("@createQueryArchive", true)))
+            eclccCmd.appendf(" -q -qa");
+
         Owned<IStringIterator> debugValues = &workunit->getDebugValues();
         ForEach (*debugValues)
         {
@@ -696,10 +708,12 @@ class EclccCompileThread : implements IPooledThread, implements IErrorReporter, 
                 unsigned __int64 elapsed_compile = cycle_to_nanosec(get_cycles_now() - startCompile);
                 workunit->setStatistic(queryStatisticsComponentType(), queryStatisticsComponentName(), SSTcompilestage, "compile", StTimeElapsed, NULL, elapsed_compile, 1, 0, StatsMergeReplace);
             }
-            timedOut = abortWaiter.stop();
+            bool processKilled = (retcode >= 128);
+            //If the process is killed it is probably because it ran out of memory - so try to compile as a K8s job
+            timedOut = abortWaiter.stop() || (isContainerized() && processKilled);
             if (!timedOut)
             {
-                if (retcode == 0 && !timedOut)
+                if (retcode == 0)
                 {
                     StringBuffer realdllname, dllurl;
                     realdllname.append(SharedObjectPrefix).append(wuid).append(SharedObjectExtension);
@@ -740,6 +754,8 @@ class EclccCompileThread : implements IPooledThread, implements IErrorReporter, 
                 }
                 else
                 {
+                    if (processKilled)
+                        addExceptionToWorkunit(workunit, SeverityError, "eclccserver", 9999, "eclcc killed - likely to be out of memory - see compile log for details", nullptr, 0, 0, 0);
 #ifndef _CONTAINERIZED
                     Owned<IWUQuery> query = workunit->updateQuery();
                     associateLocalFile(query, FileTypeLog, logfile, "Compiler log", 0);
@@ -790,12 +806,19 @@ public:
         wuid.set((const char *) param);
     }
 
-#ifdef _CONTAINERIZED
-    void compileViaK8sJob()
+    void compileViaK8sJob(bool noteDequeued)
     {
+#ifdef _CONTAINERIZED
         Owned<IException> error;
         try
         {
+            {
+                Owned<IWorkUnitFactory> factory = getWorkUnitFactory();
+                Owned<IWorkUnit> wu = factory->updateWorkUnit(wuid.get());
+                if (noteDequeued)
+                    addTimeStamp(wu, SSTcompilestage, "compile", StWhenDequeued, 0);
+                addTimeStamp(wu, SSTcompilestage, "compile", StWhenK8sLaunched, 0);
+            }
             runK8sJob("compile", wuid, wuid);
         }
         catch (IException *E)
@@ -821,8 +844,8 @@ public:
             workunit->commit();
             workunit.clear();
         }
-    }
 #endif
+    }
 
     virtual void threadmain() override
     {
@@ -830,13 +853,16 @@ public:
 
         DBGLOG("Compile request processing for workunit %s", wuid.get());
         Owned<IPropertyTree> config = getComponentConfig();
-#ifdef _CONTAINERIZED
-        if (!useChildProcesses && !childProcessTimeLimit && !config->hasProp("@workunit"))
+
+        if (isContainerized())
         {
-            compileViaK8sJob();
-            return;
+            if (!useChildProcesses && !childProcessTimeLimit && !config->hasProp("@workunit"))
+            {
+                compileViaK8sJob(true);
+                return;
+            }
         }
-#endif
+
         Owned<IWorkUnitFactory> factory = getWorkUnitFactory();
         workunit.setown(factory->updateWorkUnit(wuid.get()));
         if (!workunit)
@@ -852,6 +878,17 @@ public:
             workunit.clear();
             return;
         }
+
+        if (isContainerized())
+        {
+            if (config->getPropBool("@k8sJob"))
+                addTimeStamp(workunit, SSTcompilestage, "compile", StWhenK8sStarted, 0);
+            else
+                addTimeStamp(workunit, SSTcompilestage, "compile", StWhenDequeued, 0);
+        }
+        else
+            addTimeStamp(workunit, SSTcompilestage, "compile", StWhenDequeued, 0);
+
         CSDSServerStatus serverstatus("ECLCCserverThread");
         serverstatus.queryProperties()->setProp("@cluster", config->queryProp("@name"));
         serverstatus.queryProperties()->setProp("@thread", idxStr.str());
@@ -888,7 +925,7 @@ public:
             {
                 workunit.clear();
                 DBGLOG("Workunit %s local compilation timed out, launching k8s job", wuid.get());
-                compileViaK8sJob();
+                compileViaK8sJob(false);
                 return;
             }
 #endif

@@ -103,7 +103,7 @@ void getRemoteSpawnSSH(
 }
 
 
-ISocket * spawnRemoteChild(SpawnKind kind, const char * exe, const SocketEndpoint & childEP, unsigned version, const char *logdir, IAbortRequestCallback * abort, const char *extra)
+ISocket *spawnRemoteChild(SpawnKind kind, const char * exe, const SocketEndpoint & childEP, unsigned version, const char *logdir, IAbortRequestCallback * abort, const char *extra, HANDLE *localProcessHandle)
 {
     SocketEndpoint myEP;
     myEP.setLocalHost(0);
@@ -141,30 +141,24 @@ ISocket * spawnRemoteChild(SpawnKind kind, const char * exe, const SocketEndpoin
         return NULL;
     }
 
-    SocketEndpoint connectEP(childEP);
 #ifdef _CONTAINERIZED
-    // TODO: call a service within dafilesrv instead of starting a child process
     DWORD runcode;
-    if (!invoke_program(cmd.str(), runcode, false))
+    if (!invoke_program(cmd.str(), runcode, false, nullptr, localProcessHandle))
         throw makeStringExceptionV(-1,"Error spawning %s", exe);
-
-    //In containerized world all processes are executed locally, so make sure we try and connect to a local instance
-    connectEP.set("localhost");
 #else
-    if (SSHusername.isEmpty())
+    //Run the program directly if it is being run on the local machine - so ssh doesn't need to be running...
+    //Change once we have solved the problems with ssh etc. on windows?
+    if (childEP.isLocal())
     {
-        //Run the program directly if it is being run on the local machine - so ssh doesn't need to be running...
-        //Change once we have solved the problems with ssh etc. on windows?
-        if (childEP.isLocal())
-        {
-            DWORD runcode;
-            if (!invoke_program(cmd.str(), runcode, false))
-                throw makeStringExceptionV(-1,"Error spawning %s", exe);
-        }
-        else
-            throw MakeStringException(-1,"SSH user not specified");
+        DWORD runcode;
+        if (!invoke_program(cmd.str(), runcode, false, nullptr, localProcessHandle))
+            throw makeStringExceptionV(-1,"Error spawning %s", exe);
     }
-    else {
+    else
+    {
+        if (SSHusername.isEmpty())
+            throw MakeStringException(-1,"SSH user not specified");
+        
         Owned<IFRunSSH> runssh = createFRunSSH();
         runssh->init(cmd.str(),SSHidentfilename,SSHusername,SSHpasswordenc,SSHtimeout,SSHretries);
         runssh->exec(childEP,NULL,true); // need workdir? TBD
@@ -173,6 +167,7 @@ ISocket * spawnRemoteChild(SpawnKind kind, const char * exe, const SocketEndpoin
 
     //Have to now try and connect to the child and get back the port it is listening on
     unsigned attempts = 20;
+    SocketEndpoint connectEP(childEP);
     connectEP.port = port;
     LOG(MCdetailDebugInfo, unknownJob, "Start connect to correct slave (%3d)", replyTag);
     IException * error = NULL;
@@ -422,7 +417,7 @@ void CRemoteSlave::run(int argc, const char * * argv)
     logFile.append(slaveName);
     addFileTimestamp(logFile, true);
     logFile.append(".log");
-    attachStandardFileLogMsgMonitor(logFile.str(), 0, MSGFIELD_STANDARD, MSGAUD_all, MSGCLS_all, TopDetail, false, true, true);
+    attachStandardFileLogMsgMonitor(logFile.str(), 0, MSGFIELD_STANDARD, MSGAUD_all, MSGCLS_all, TopDetail, LOGFORMAT_table, true, true);
     queryLogMsgManager()->removeMonitor(queryStderrLogMsgHandler());        // no point logging output to screen if run remote!
     LOG(MCdebugProgress, unknownJob, "Starting %s %s %s %s %s %s %s",slaveName.get(),(argc>1)?argv[1]:"",(argc>2)?argv[2]:"",(argc>3)?argv[3]:"",(argc>4)?argv[4]:"",(argc>5)?argv[5]:"",(argc>6)?argv[6]:"");
 #else

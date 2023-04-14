@@ -36,6 +36,9 @@
 
 #include "s3file.hpp"
 
+#ifdef _MSC_VER
+#undef GetObject
+#endif
 /*
  * S3 questions:
  *
@@ -682,6 +685,10 @@ public:
             return createS3File(fileName);
         else
             return NULL;
+    }
+    virtual IAPICopyClient * getCopyApiClient(IStorageApiInfo * source, IStorageApiInfo * target) override
+    {
+        return nullptr;
     }
 
 protected:

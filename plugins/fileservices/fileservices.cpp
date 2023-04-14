@@ -695,7 +695,7 @@ static void blockUntilComplete(const char * label, IClientFileSpray &server, ICo
 
 //----------------------------------------------------------------------------------
 
-FILESERVICES_API char * FILESERVICES_CALL implementSprayFixed(ICodeContext *ctx, const char * sourceIP, const char * sourcePath, int recordSize, const char * destinationGroup, const char * destinationLogicalName, int timeOut, const char * espServerIpPort, int maxConnections, bool overwrite, bool replicate, bool compress, bool failIfNoSourceFile, int expireDays, const char * dfuServerQueue, bool noSplit, const char * sourcePlane = nullptr, unsigned destinationNumParts = 0)
+FILESERVICES_API char * FILESERVICES_CALL implementSprayFixed(ICodeContext *ctx, const char * sourceIP, const char * sourcePath, int recordSize, const char * destinationGroup, const char * destinationLogicalName, int timeOut, const char * espServerIpPort, int maxConnections, bool overwrite, bool replicate, bool compress, bool failIfNoSourceFile, int expireDays, const char * dfuServerQueue, bool noSplit, const char * sourcePlane = nullptr, unsigned destinationNumParts = 0, bool noCommon = true)
 {
     LOG(MCauditInfo, "Spray:  %s", destinationLogicalName);
 
@@ -731,6 +731,8 @@ FILESERVICES_API char * FILESERVICES_CALL implementSprayFixed(ICodeContext *ctx,
 
     if (noSplit)
         req->setNosplit(true);
+
+    req->setNoCommon(noCommon);
 
     Owned<IClientSprayFixedResponse> result = server.SprayFixed(req);
 
@@ -781,6 +783,11 @@ FILESERVICES_API void FILESERVICES_CALL fsSprayFixed_v5(ICodeContext *ctx, const
     CTXFREE(parentCtx, implementSprayFixed(ctx, sourceIP, sourcePath, recordSize, destinationGroup, destinationLogicalName, timeOut, espServerIpPort, maxConnections, overwrite, replicate, compress, failIfNoSourceFile, expireDays, dfuServerQueue, noSplit, sourcePlane, destinationNumParts));
 }
 
+FILESERVICES_API void FILESERVICES_CALL fsSprayFixed_v6(ICodeContext *ctx, const char * sourceIP, const char * sourcePath, int recordSize, const char * destinationGroup, const char * destinationLogicalName, int timeOut, const char * espServerIpPort, int maxConnections, bool overwrite, bool replicate, bool compress, bool failIfNoSourceFile, int expireDays, const char * dfuServerQueue, bool noSplit, const char * sourcePlane, unsigned destinationNumParts, bool noCommon)
+{
+    CTXFREE(parentCtx, implementSprayFixed(ctx, sourceIP, sourcePath, recordSize, destinationGroup, destinationLogicalName, timeOut, espServerIpPort, maxConnections, overwrite, replicate, compress, failIfNoSourceFile, expireDays, dfuServerQueue, noSplit, sourcePlane, destinationNumParts, noCommon));
+}
+
 FILESERVICES_API char * FILESERVICES_CALL fsfSprayFixed(ICodeContext *ctx, const char * sourceIP, const char * sourcePath, int recordSize, const char * destinationGroup, const char * destinationLogicalName, int timeOut, const char * espServerIpPort, int maxConnections, bool overwrite, bool replicate, bool compress, bool failIfNoSourceFile)
 {
     return implementSprayFixed(ctx, sourceIP, sourcePath, recordSize, destinationGroup, destinationLogicalName, timeOut, espServerIpPort, maxConnections, overwrite, replicate, compress, failIfNoSourceFile, -1, nullptr, false);
@@ -806,9 +813,14 @@ FILESERVICES_API char * FILESERVICES_CALL fsfSprayFixed_v5(ICodeContext *ctx, co
     return implementSprayFixed(ctx, sourceIP, sourcePath, recordSize, destinationGroup, destinationLogicalName, timeOut, espServerIpPort, maxConnections, overwrite, replicate, compress, failIfNoSourceFile, expireDays, dfuServerQueue, noSplit, sourcePlane, destinationNumParts);
 }
 
+FILESERVICES_API char * FILESERVICES_CALL fsfSprayFixed_v6(ICodeContext *ctx, const char * sourceIP, const char * sourcePath, int recordSize, const char * destinationGroup, const char * destinationLogicalName, int timeOut, const char * espServerIpPort, int maxConnections, bool overwrite, bool replicate, bool compress, bool failIfNoSourceFile, int expireDays, const char * dfuServerQueue, bool noSplit, const char * sourcePlane, unsigned destinationNumParts, bool noCommon)
+{
+    return implementSprayFixed(ctx, sourceIP, sourcePath, recordSize, destinationGroup, destinationLogicalName, timeOut, espServerIpPort, maxConnections, overwrite, replicate, compress, failIfNoSourceFile, expireDays, dfuServerQueue, noSplit, sourcePlane, destinationNumParts, noCommon);
+}
+
 //----------------------------------------------------------------------------------
 
-static char * implementSprayVariable(ICodeContext *ctx, const char * sourceIP, const char * sourcePath, int sourceMaxRecordSize, const char * sourceCsvSeparate, const char * sourceCsvTerminate, const char * sourceCsvQuote, const char * sourceCsvEscape, const char * destinationGroup, const char * destinationLogicalName, int timeOut, const char * espServerIpPort, int maxConnections, bool overwrite, bool replicate, bool compress, bool failIfNoSourceFile, bool recordStructurePresent, bool quotedTerminator, const char * encoding, int expireDays, const char * dfuServerQueue, bool noSplit, const char * sourcePlane = nullptr, unsigned destinationNumParts = 0)
+static char * implementSprayVariable(ICodeContext *ctx, const char * sourceIP, const char * sourcePath, int sourceMaxRecordSize, const char * sourceCsvSeparate, const char * sourceCsvTerminate, const char * sourceCsvQuote, const char * sourceCsvEscape, const char * destinationGroup, const char * destinationLogicalName, int timeOut, const char * espServerIpPort, int maxConnections, bool overwrite, bool replicate, bool compress, bool failIfNoSourceFile, bool recordStructurePresent, bool quotedTerminator, const char * encoding, int expireDays, const char * dfuServerQueue, bool noSplit, const char * sourcePlane = nullptr, unsigned destinationNumParts = 0, bool noCommon = true)
 {
     LOG(MCauditInfo, "Spray:  %s", destinationLogicalName);
 
@@ -854,6 +866,7 @@ static char * implementSprayVariable(ICodeContext *ctx, const char * sourceIP, c
 
     if (noSplit)
         req->setNosplit(true);
+    req->setNoCommon(noCommon);
 
     Owned<IClientSprayResponse> result = server.SprayVariable(req);
 
@@ -969,10 +982,20 @@ FILESERVICES_API char * FILESERVICES_CALL fsfSprayVariable_v9(ICodeContext *ctx,
     return implementSprayVariable(ctx, sourceIP, sourcePath, sourceMaxRecordSize, sourceCsvSeparate, sourceCsvTerminate, sourceCsvQuote, csvEscape, destinationGroup, destinationLogicalName, timeOut, espServerIpPort, maxConnections, overwrite, replicate, compress, failIfNoSourceFile, recordStructurePresent, quotedTerminator, encoding, expireDays, dfuServerQueue, noSplit, sourcePlane, destinationNumParts);
 }
 
+FILESERVICES_API void FILESERVICES_CALL fsSprayVariable_v10(ICodeContext *ctx, const char * sourceIP, const char * sourcePath, int sourceMaxRecordSize, const char * sourceCsvSeparate, const char * sourceCsvTerminate, const char * sourceCsvQuote, const char * destinationGroup, const char * destinationLogicalName, int timeOut, const char * espServerIpPort, int maxConnections, bool overwrite, bool replicate, bool compress, const char * csvEscape, bool failIfNoSourceFile, bool recordStructurePresent, bool quotedTerminator, const char * encoding, int expireDays, const char * dfuServerQueue, bool noSplit, const char * sourcePlane, unsigned destinationNumParts, bool noCommon)
+{
+    CTXFREE(parentCtx, implementSprayVariable(ctx, sourceIP, sourcePath, sourceMaxRecordSize, sourceCsvSeparate, sourceCsvTerminate, sourceCsvQuote, csvEscape, destinationGroup, destinationLogicalName, timeOut, espServerIpPort, maxConnections, overwrite, replicate, compress, failIfNoSourceFile, recordStructurePresent, quotedTerminator, encoding, expireDays, dfuServerQueue, noSplit, sourcePlane, destinationNumParts, noCommon));
+}
+
+FILESERVICES_API char * FILESERVICES_CALL fsfSprayVariable_v10(ICodeContext *ctx, const char * sourceIP, const char * sourcePath, int sourceMaxRecordSize, const char * sourceCsvSeparate, const char * sourceCsvTerminate, const char * sourceCsvQuote, const char * destinationGroup, const char * destinationLogicalName, int timeOut, const char * espServerIpPort, int maxConnections, bool overwrite, bool replicate, bool compress, const char * csvEscape, bool failIfNoSourceFile, bool recordStructurePresent, bool quotedTerminator, const char * encoding, int expireDays, const char * dfuServerQueue, bool noSplit, const char * sourcePlane, unsigned destinationNumParts, bool noCommon)
+{
+    return implementSprayVariable(ctx, sourceIP, sourcePath, sourceMaxRecordSize, sourceCsvSeparate, sourceCsvTerminate, sourceCsvQuote, csvEscape, destinationGroup, destinationLogicalName, timeOut, espServerIpPort, maxConnections, overwrite, replicate, compress, failIfNoSourceFile, recordStructurePresent, quotedTerminator, encoding, expireDays, dfuServerQueue, noSplit, sourcePlane, destinationNumParts, noCommon);
+}
+
 
 //----------------------------------------------------------------------------------
 
-FILESERVICES_API char * FILESERVICES_CALL implementSprayXml(ICodeContext *ctx, const char * sourceIP, const char * sourcePath, int sourceMaxRecordSize, const char *sourceRowTag, const char *sourceEncoding, const char * destinationGroup, const char * destinationLogicalName, int timeOut, const char * espServerIpPort, int maxConnections, bool overwrite, bool replicate, bool compress, bool failIfNoSourceFile, int expireDays, const char * dfuServerQueue, bool noSplit, const char * sourcePlane, unsigned destinationNumParts=0)
+FILESERVICES_API char * FILESERVICES_CALL implementSprayXml(ICodeContext *ctx, const char * sourceIP, const char * sourcePath, int sourceMaxRecordSize, const char *sourceRowTag, const char *sourceEncoding, const char * destinationGroup, const char * destinationLogicalName, int timeOut, const char * espServerIpPort, int maxConnections, bool overwrite, bool replicate, bool compress, bool failIfNoSourceFile, int expireDays, const char * dfuServerQueue, bool noSplit, const char * sourcePlane, unsigned destinationNumParts=0, bool noCommon = true)
 {
     LOG(MCauditInfo, "Spray:  %s", destinationLogicalName);
 
@@ -1015,6 +1038,8 @@ FILESERVICES_API char * FILESERVICES_CALL implementSprayXml(ICodeContext *ctx, c
 
     if (noSplit)
         req->setNosplit(true);
+
+    req->setNoCommon(noCommon);
 
     Owned<IClientSprayResponse> result = server.SprayVariable(req);
 
@@ -1066,6 +1091,12 @@ FILESERVICES_API void FILESERVICES_CALL fsSprayXml_v5(ICodeContext *ctx, const c
     CTXFREE(parentCtx, implementSprayXml(ctx, sourceIP, sourcePath, sourceMaxRecordSize, sourceRowTag, sourceEncoding, destinationGroup, destinationLogicalName, timeOut, espServerIpPort, maxConnections, overwrite, replicate, compress, failIfNoSourceFile, expireDays, dfuServerQueue, noSplit, sourcePlane, destinationNumParts));
 }
 
+FILESERVICES_API void FILESERVICES_CALL fsSprayXml_v6(ICodeContext *ctx, const char * sourceIP, const char * sourcePath, int sourceMaxRecordSize, const char *sourceRowTag, const char *sourceEncoding, const char * destinationGroup, const char * destinationLogicalName, int timeOut, const char * espServerIpPort, int maxConnections, bool overwrite, bool replicate, bool compress, bool failIfNoSourceFile, int expireDays, const char * dfuServerQueue, bool noSplit, const char * sourcePlane, unsigned destinationNumParts, bool noCommon)
+{
+    CTXFREE(parentCtx, implementSprayXml(ctx, sourceIP, sourcePath, sourceMaxRecordSize, sourceRowTag, sourceEncoding, destinationGroup, destinationLogicalName, timeOut, espServerIpPort, maxConnections, overwrite, replicate, compress, failIfNoSourceFile, expireDays, dfuServerQueue, noSplit, sourcePlane, destinationNumParts, noCommon));
+}
+
+
 FILESERVICES_API char * FILESERVICES_CALL fsfSprayXml(ICodeContext *ctx, const char * sourceIP, const char * sourcePath, int sourceMaxRecordSize, const char *sourceRowTag, const char *sourceEncoding, const char * destinationGroup, const char * destinationLogicalName, int timeOut, const char * espServerIpPort, int maxConnections, bool overwrite, bool replicate, bool compress, bool failIfNoSourceFile)
 {
     return implementSprayXml(ctx, sourceIP, sourcePath, sourceMaxRecordSize, sourceRowTag, sourceEncoding, destinationGroup, destinationLogicalName, timeOut, espServerIpPort, maxConnections, overwrite, replicate, compress, failIfNoSourceFile, -1, nullptr, false, nullptr);
@@ -1091,9 +1122,15 @@ FILESERVICES_API char * FILESERVICES_CALL fsfSprayXml_v5(ICodeContext *ctx, cons
     return implementSprayXml(ctx, sourceIP, sourcePath, sourceMaxRecordSize, sourceRowTag, sourceEncoding, destinationGroup, destinationLogicalName, timeOut, espServerIpPort, maxConnections, overwrite, replicate, compress, failIfNoSourceFile, expireDays, dfuServerQueue, noSplit, sourcePlane, destinationNumParts);
 }
 
+FILESERVICES_API char * FILESERVICES_CALL fsfSprayXml_v6(ICodeContext *ctx, const char * sourceIP, const char * sourcePath, int sourceMaxRecordSize, const char *sourceRowTag, const char *sourceEncoding, const char * destinationGroup, const char * destinationLogicalName, int timeOut, const char * espServerIpPort, int maxConnections, bool overwrite, bool replicate, bool compress, bool failIfNoSourceFile, int expireDays, const char * dfuServerQueue, bool noSplit, const char * sourcePlane, unsigned destinationNumParts, bool noCommon)
+{
+    return implementSprayXml(ctx, sourceIP, sourcePath, sourceMaxRecordSize, sourceRowTag, sourceEncoding, destinationGroup, destinationLogicalName, timeOut, espServerIpPort, maxConnections, overwrite, replicate, compress, failIfNoSourceFile, expireDays, dfuServerQueue, noSplit, sourcePlane, destinationNumParts, noCommon);
+}
+
+
 //----------------------------------------------------------------------------------
 
-FILESERVICES_API char * FILESERVICES_CALL implementSprayJson(ICodeContext *ctx, const char * sourceIP, const char * sourcePath, int sourceMaxRecordSize, const char *sourceRowPath, const char *sourceEncoding, const char * destinationGroup, const char * destinationLogicalName, int timeOut, const char * espServerIpPort, int maxConnections, bool overwrite, bool replicate, bool compress, bool failIfNoSourceFile, int expireDays, const char * dfuServerQueue, bool noSplit, const char * username, const char * userPw, const char * sourcePlane, unsigned destinationNumParts=0)
+FILESERVICES_API char * FILESERVICES_CALL implementSprayJson(ICodeContext *ctx, const char * sourceIP, const char * sourcePath, int sourceMaxRecordSize, const char *sourceRowPath, const char *sourceEncoding, const char * destinationGroup, const char * destinationLogicalName, int timeOut, const char * espServerIpPort, int maxConnections, bool overwrite, bool replicate, bool compress, bool failIfNoSourceFile, int expireDays, const char * dfuServerQueue, bool noSplit, const char * username, const char * userPw, const char * sourcePlane, unsigned destinationNumParts=0, bool noCommon = true)
 {
     LOG(MCauditInfo, "Spray JSON: %s", destinationLogicalName);
 
@@ -1138,6 +1175,8 @@ FILESERVICES_API char * FILESERVICES_CALL implementSprayJson(ICodeContext *ctx, 
     if (noSplit)
         req->setNosplit(true);
 
+    req->setNoCommon(noCommon);
+
     // Store username/psw
     if (!isEmptyString(username))
     {
@@ -1181,6 +1220,12 @@ FILESERVICES_API void FILESERVICES_CALL fsSprayJson_v2(ICodeContext *ctx, const 
     CTXFREE(parentCtx, implementSprayJson(ctx, sourceIP, sourcePath, sourceMaxRecordSize, sourceRowPath, sourceEncoding, destinationGroup, destinationLogicalName, timeOut, espServerIpPort, maxConnections, overwrite, replicate, compress, failIfNoSourceFile, expireDays, dfuServerQueue, noSplit, username, userPw, sourcePlane, destinationNumParts));
 }
 
+FILESERVICES_API void FILESERVICES_CALL fsSprayJson_v3(ICodeContext *ctx, const char * sourceIP, const char * sourcePath, int sourceMaxRecordSize, const char *sourceRowPath, const char *sourceEncoding, const char * destinationGroup, const char * destinationLogicalName, int timeOut, const char * espServerIpPort, int maxConnections, bool overwrite, bool replicate, bool compress, bool failIfNoSourceFile, int expireDays, const char * dfuServerQueue, bool noSplit, const char * username, const char * userPw, const char * sourcePlane, unsigned destinationNumParts, bool noCommon)
+{
+    CTXFREE(parentCtx, implementSprayJson(ctx, sourceIP, sourcePath, sourceMaxRecordSize, sourceRowPath, sourceEncoding, destinationGroup, destinationLogicalName, timeOut, espServerIpPort, maxConnections, overwrite, replicate, compress, failIfNoSourceFile, expireDays, dfuServerQueue, noSplit, username, userPw, sourcePlane, destinationNumParts, noCommon));
+}
+
+
 FILESERVICES_API char * FILESERVICES_CALL fsfSprayJson(ICodeContext *ctx, const char * sourceIP, const char * sourcePath, int sourceMaxRecordSize, const char *sourceRowPath, const char *sourceEncoding, const char * destinationGroup, const char * destinationLogicalName, int timeOut, const char * espServerIpPort, int maxConnections, bool overwrite, bool replicate, bool compress, bool failIfNoSourceFile, int expireDays, const char * dfuServerQueue, bool noSplit, const char * username, const char * userPw)
 {
     return implementSprayJson(ctx, sourceIP, sourcePath, sourceMaxRecordSize, sourceRowPath, sourceEncoding, destinationGroup, destinationLogicalName, timeOut, espServerIpPort, maxConnections, overwrite, replicate, compress, failIfNoSourceFile, expireDays, dfuServerQueue, noSplit, username, userPw, nullptr);
@@ -1189,6 +1234,11 @@ FILESERVICES_API char * FILESERVICES_CALL fsfSprayJson(ICodeContext *ctx, const 
 FILESERVICES_API char * FILESERVICES_CALL fsfSprayJson_v2(ICodeContext *ctx, const char * sourceIP, const char * sourcePath, int sourceMaxRecordSize, const char *sourceRowPath, const char *sourceEncoding, const char * destinationGroup, const char * destinationLogicalName, int timeOut, const char * espServerIpPort, int maxConnections, bool overwrite, bool replicate, bool compress, bool failIfNoSourceFile, int expireDays, const char * dfuServerQueue, bool noSplit, const char * username, const char * userPw, const char * sourcePlane, unsigned destinationNumParts)
 {
     return implementSprayJson(ctx, sourceIP, sourcePath, sourceMaxRecordSize, sourceRowPath, sourceEncoding, destinationGroup, destinationLogicalName, timeOut, espServerIpPort, maxConnections, overwrite, replicate, compress, failIfNoSourceFile, expireDays, dfuServerQueue, noSplit, username, userPw, sourcePlane, destinationNumParts);
+}
+
+FILESERVICES_API char * FILESERVICES_CALL fsfSprayJson_v3(ICodeContext *ctx, const char * sourceIP, const char * sourcePath, int sourceMaxRecordSize, const char *sourceRowPath, const char *sourceEncoding, const char * destinationGroup, const char * destinationLogicalName, int timeOut, const char * espServerIpPort, int maxConnections, bool overwrite, bool replicate, bool compress, bool failIfNoSourceFile, int expireDays, const char * dfuServerQueue, bool noSplit, const char * username, const char * userPw, const char * sourcePlane, unsigned destinationNumParts, bool noCommon)
+{
+    return implementSprayJson(ctx, sourceIP, sourcePath, sourceMaxRecordSize, sourceRowPath, sourceEncoding, destinationGroup, destinationLogicalName, timeOut, espServerIpPort, maxConnections, overwrite, replicate, compress, failIfNoSourceFile, expireDays, dfuServerQueue, noSplit, username, userPw, sourcePlane, destinationNumParts, noCommon);
 }
 
 //----------------------------------------------------------------------------------
@@ -2805,6 +2855,22 @@ static bool build_dfuplus_globals(int argc, const char *argv[], IProperties * gl
         if (strchr(argv[i],'='))
             globals->loadProp(argv[i]);
 
+    // if server is empty we can look up the settings for the default eclservices (eclwatch if eclservices is not found)
+    if (isEmptyString(globals->queryProp("server")))
+    {
+        const char *url = fsGetEspURL(nullptr, nullptr);
+        if (!isEmptyString(url))
+        {
+            if (strncmp("mtls:", url, 5)==0)
+            {
+                if (!globals->hasProp("mtls-secret"))
+                    globals->setProp("mtls-secret", "local");
+                url+=5;
+            }
+            globals->setProp("server", url);
+        }
+    }
+
     StringBuffer tmp;
     if (globals->hasProp("encrypt")) {
         encrypt(tmp.clear(),globals->queryProp("encrypt") );  // basic encryption at this stage
@@ -3089,4 +3155,28 @@ FILESERVICES_API void FILESERVICES_CALL fsClearExpireDays(ICodeContext * ctx, co
         df->setExpire(-1);
     else
         throw makeStringExceptionV(0, "ClearExpireDays: Could not find logical file %s", lfn.str());
+}
+
+static CriticalSection noCommonDefCrit;
+static int noCommonDef = NotFound;
+FILESERVICES_API bool FILESERVICES_CALL fsGetNoCommonDefault()
+{
+    // Returns the boolean value of 'noCommon' property from the Software/Globals if it is defined,
+    // Otherwise it returns with true, the recent default value of 'noCommon'
+#ifdef _CONTAINERIZED
+    return getComponentConfigSP()->getPropBool("@noCommon", true);
+#else
+    CriticalBlock b(noCommonDefCrit);
+    if (NotFound == noCommonDef)
+    {
+        // Default value if it is not defined in environment.xml
+        noCommonDef = true;
+        Owned<IConstEnvironment> daliEnv = openDaliEnvironment();
+        Owned<IPropertyTree> env = getEnvironmentTree(daliEnv);
+
+        if (env.get())
+            noCommonDef = env->getPropBool("@noCommon", noCommonDef);
+    }
+#endif
+    return (bool)noCommonDef;
 }

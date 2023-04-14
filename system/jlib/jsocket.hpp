@@ -145,6 +145,8 @@ inline StringBuffer & GetHostName(StringBuffer &str) { return str.append(GetCach
 extern jlib_decl IpAddress &GetHostIp(IpAddress &ip);
 extern jlib_decl IpAddress &localHostToNIC(IpAddress &ip);  
 
+extern jlib_decl bool queryKeepAlive(int &time, int &intvl, int &probes);
+
 class jlib_decl SocketEndpoint : extends IpAddress
 {
 public:
@@ -731,6 +733,12 @@ public:
 };
 
 extern jlib_decl void shutdownAndCloseNoThrow(ISocket * optSocket);     // Safely shutdown and close a socket without throwing an exception.
+
+#ifdef _WIN32
+#define SOCKETERRNO() WSAGetLastError()
+#else
+#define SOCKETERRNO() (errno)
+#endif
 
 #endif
 

@@ -46,6 +46,7 @@
 #include "nbcd.hpp"
 #include "thorcommon.hpp"
 #include "jstats.h"
+#include "thorfile.hpp"
 
 #include "jstring.hpp"
 #include "exception_util.hpp"
@@ -374,20 +375,21 @@ bool CWsDfuEx::onDFUInfo(IEspContext &context, IEspDFUInfoRequest &req, IEspDFUI
             userdesc->set(username.str(), context.queryPassword(), context.querySignature());
         }
 
+        bool forceIndexInfo = req.getForceIndexInfo();
         if (req.getUpdateDescription())
         {
             double version = context.getClientVersion();
             if (version < 1.38)
                 doGetFileDetails(context, userdesc.get(), req.getFileName(), req.getCluster(), req.getQuerySet(), req.getQuery(), req.getFileDesc(),
-                    req.getIncludeJsonTypeInfo(), req.getIncludeBinTypeInfo(), req.getProtect(), req.getRestrict(), resp.updateFileDetail());
+                    req.getIncludeJsonTypeInfo(), req.getIncludeBinTypeInfo(), req.getProtect(), req.getRestrict(), resp.updateFileDetail(), forceIndexInfo);
             else
                 doGetFileDetails(context, userdesc.get(), req.getName(), req.getCluster(), req.getQuerySet(), req.getQuery(), req.getFileDesc(),
-                    req.getIncludeJsonTypeInfo(), req.getIncludeBinTypeInfo(), req.getProtect(), req.getRestrict(), resp.updateFileDetail());
+                    req.getIncludeJsonTypeInfo(), req.getIncludeBinTypeInfo(), req.getProtect(), req.getRestrict(), resp.updateFileDetail(), forceIndexInfo);
         }
         else
         {
             doGetFileDetails(context, userdesc.get(), req.getName(), req.getCluster(), req.getQuerySet(), req.getQuery(), NULL,
-                    req.getIncludeJsonTypeInfo(), req.getIncludeBinTypeInfo(), req.getProtect(), req.getRestrict(), resp.updateFileDetail());
+                    req.getIncludeJsonTypeInfo(), req.getIncludeBinTypeInfo(), req.getProtect(), req.getRestrict(), resp.updateFileDetail(), forceIndexInfo);
         }
     }
     catch(IException* e)
@@ -2183,7 +2185,7 @@ void CWsDfuEx::queryFieldNames(IEspContext &context, const char *fileName, const
 
 void CWsDfuEx::doGetFileDetails(IEspContext &context, IUserDescriptor *udesc, const char *name, const char *cluster,
     const char *querySet, const char *query, const char *description, bool includeJsonTypeInfo, bool includeBinTypeInfo,
-    CDFUChangeProtection protect, CDFUChangeRestriction changeRestriction, IEspDFUFileDetail &FileDetails)
+    CDFUChangeProtection protect, CDFUChangeRestriction changeRestriction, IEspDFUFileDetail &FileDetails, bool forceIndexInfo)
 {
     if (!name || !*name)
         throw MakeStringException(ECLWATCH_MISSING_PARAMS, "File name required");
@@ -2297,8 +2299,7 @@ void CWsDfuEx::doGetFileDetails(IEspContext &context, IUserDescriptor *udesc, co
                 FileDetails.setCompressedFileSize(compressedSize);
                 if (version >= 1.34)
                 {
-                    __int64 diff = size - compressedSize;
-                    Decimal d(((double) diff)/size*100);
+                    Decimal d(((double) compressedSize)/size*100);
                     d.round(2);
                     FileDetails.setPercentCompressed(d.getCString());
                 }
@@ -2672,8 +2673,37 @@ void CWsDfuEx::doGetFileDetails(IEspContext &context, IUserDescriptor *udesc, co
             FileDetails.setCost(atRestCost+accessCost);
         else
         {
-            FileDetails.setAccessCost(atRestCost);
-            FileDetails.setAtRestCost(accessCost);
+            FileDetails.setAccessCost(accessCost);
+            FileDetails.setAtRestCost(atRestCost);
+        }
+    }
+    if (version >= 1.65)
+    {
+        if (isFileKey(df))
+        {
+            DerivedIndexInformation info;
+            if (calculateDerivedIndexInformation(info, df, forceIndexInfo))
+            {
+                IEspDFUIndexInfo & extended = FileDetails.updateExtendedIndexInfo();
+                extended.setIsLeafCountEstimated(!info.knownLeafCount);
+                extended.setNumLeafNodes(info.numLeafNodes);
+                if (info.knownLeafCount)
+                    extended.setNumBlobNodes(info.numBlobNodes);
+                extended.setNumBranchNodes(info.numBranchNodes);
+                extended.setSizeDiskLeaves(info.sizeDiskLeaves);
+                if (info.knownLeafCount)
+                    extended.setSizeDiskBlobs(info.sizeDiskBlobs);
+                extended.setSizeDiskBranches(info.sizeDiskBranches);
+                if (info.sizeOriginalData)
+                    extended.setSizeOriginalData(info.sizeOriginalData);
+                extended.setSizeOriginalBranches(info.sizeOriginalBranches);
+                extended.setSizeMemoryLeaves(info.sizeMemoryLeaves);
+                extended.setSizeMemoryBranches(info.sizeMemoryBranches);
+                extended.setBranchCompressionPercent(info.getBranchCompression()*100);
+                double dataCompression = info.getDataCompression();
+                if (dataCompression != 0)
+                    extended.setDataCompressionPercent(dataCompression*100);
+            }
         }
     }
     PROGLOG("doGetFileDetails: %s done", name);
@@ -6549,6 +6579,7 @@ bool CWsDfuEx::onDFUFilePublish(IEspContext &context, IEspDFUFilePublishRequest 
     Owned<IDistributedFile> newFile;
     Owned<IFileDescriptor> fileDesc;
     StringBuffer normalizeTempFileName;
+    bool newFileAttached = false;
     try
     {
         const char *fileId = req.getFileId();
@@ -6676,9 +6707,9 @@ bool CWsDfuEx::onDFUFilePublish(IEspContext &context, IEspDFUFilePublishRequest 
         setPublishFileSize(newFileName, fileDesc);
         newFile.setown(queryDistributedFileDirectory().createNew(fileDesc));
         newFile->validate();
-        newFile->setAccessed();
         // JCSMORE attach() should have a timeout, then req.getLockTimeoutMs() should be used here.
         newFile->attach(normalizeTempFileName, userDesc);
+        newFileAttached = true;
 
         if (!newFile->renamePhysicalPartFiles(newFileName, nullptr, nullptr, fileDesc->queryDefaultDir()))
             throw makeStringExceptionV(ECLWATCH_FILE_NOT_EXIST, "DFUFilePublish: Failed in renamePhysicalPartFiles %s.", newFileName.str());
@@ -6694,18 +6725,28 @@ bool CWsDfuEx::onDFUFilePublish(IEspContext &context, IEspDFUFilePublishRequest 
 
     if (exception)
     {
-        if (fileDesc)
+        try
         {
-            Owned<IMultiException> exceptions = MakeMultiException("CWsDfuEx::onDFUFilePublish");
-            queryDistributedFileDirectory().removePhysicalPartFiles(normalizeTempFileName, fileDesc, exceptions);
-            if (exceptions->ordinality())
+            if (fileDesc)
             {
-                StringBuffer errMsg("Error whilst clearing up temporary file: ");
-                EXCLOG(exceptions, errMsg.append(normalizeTempFileName).str());
+                Owned<IMultiException> exceptions = MakeMultiException("CWsDfuEx::onDFUFilePublish");
+                queryDistributedFileDirectory().removePhysicalPartFiles(normalizeTempFileName, fileDesc, exceptions);
+                if (exceptions->ordinality())
+                {
+                    StringBuffer errMsg("Error whilst clearing up temporary file: ");
+                    EXCLOG(exceptions, errMsg.append(normalizeTempFileName).str());
+                }
             }
+            if (newFileAttached)
+                newFile->detach(30000);
         }
-        if (newFile)
-            newFile->detach(30000);
+        catch (IException *e)
+        {
+            // follow-on exception.
+            // Ensure original exception takes precedence, log follow-on exception only.
+            EXCLOG(e);
+            e->Release();
+        }
         FORWARDEXCEPTION(context, exception.getClear(), ECLWATCH_INTERNAL_ERROR);
     }
     return true;

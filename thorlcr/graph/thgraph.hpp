@@ -38,6 +38,7 @@
 
 #include <unordered_map>
 #include <string>
+#include <memory>
 
 #include "jlib.hpp"
 #include "jarray.hpp"
@@ -115,6 +116,7 @@ interface ICodeContextExt : extends ICodeContext
 {
     virtual IConstWUResult *getExternalResult(const char * wuid, const char *name, unsigned sequence) = 0;
     virtual IConstWUResult *getResultForGet(const char *name, unsigned sequence) = 0;
+    virtual void gatherStats(CRuntimeStatisticCollection &mergedStats) const = 0;
 };
 
 interface IBackup;
@@ -197,6 +199,7 @@ class CFileUsageEntry : public CInterface
     unsigned usage;
     graph_id graphId;
     WUFileKind fileKind;
+    offset_t size = 0;
 public:
     CFileUsageEntry(const char *_name, graph_id _graphId, WUFileKind _fileKind, unsigned _usage) :name(_name), graphId(_graphId), fileKind(_fileKind), usage(_usage) { }
     unsigned queryUsage() const { return usage; }
@@ -206,16 +209,24 @@ public:
     void decUsage() { --usage; }
 
     const char *queryFindString() const { return name; }
+    inline void setSize(offset_t _size) { size = _size; }
+    inline offset_t getSize() const { return size; }
 };
 
 typedef IIteratorOf<CFileUsageEntry> IFileUsageIterator;
 
 interface IGraphTempHandler : extends IInterface
 {
-    virtual void registerFile(const char *name, graph_id graphId, unsigned usageCount, bool temp, WUFileKind fileKind=WUFileStandard, StringArray *clusters=NULL) = 0;
+    virtual CFileUsageEntry * registerFile(const char *name, graph_id graphId, unsigned usageCount, bool temp, WUFileKind fileKind=WUFileStandard, StringArray *clusters=NULL) = 0;
     virtual void deregisterFile(const char *name, bool kept=false) = 0;
     virtual void clearTemps() = 0;
     virtual IFileUsageIterator *getIterator() = 0;
+    virtual void serializeUsageStats(MemoryBuffer &mb, graph_id gid) = 0;
+    static void serializeNullUsageStats(MemoryBuffer &mb)
+    {
+        mb.append((offset_t)0);
+        mb.append((offset_t)0);
+    }
 };
 
 class CGraphDependency : public CInterface
@@ -292,7 +303,7 @@ class CActivityCodeContext : implements ICodeContextExt
     ICodeContextExt *ctx = nullptr;
     CGraphBase *containerGraph = nullptr;
     CGraphBase *parent = nullptr;
-    CRuntimeStatisticCollection *stats = nullptr;
+    std::unique_ptr<CRuntimeStatisticCollection> stats;
     mutable CriticalSection contextCrit;
     std::unordered_map<std::string, Owned<ISectionTimer>> functionTimers;
 
@@ -304,7 +315,12 @@ public:
         containerGraph = _containerGraph;
         ctx = _ctx;
     }
-    void setStats(CRuntimeStatisticCollection *_stats) { stats = _stats; }
+    void setStats(const StatisticsMapping &mapping)
+    {
+        dbgassertex(!stats);
+        stats.reset(new CRuntimeStatisticCollection(mapping));
+    }
+    virtual void gatherStats(CRuntimeStatisticCollection &mergedStats) const override { mergedStats.merge(*stats); }
     virtual const char *loadResource(unsigned id) { return ctx->loadResource(id); }
     virtual void setResultBool(const char *name, unsigned sequence, bool value) { ctx->setResultBool(name, sequence, value); }
     virtual void setResultData(const char *name, unsigned sequence, int len, const void * data) { ctx->setResultData(name, sequence, len, data); }
@@ -557,10 +573,10 @@ public:
     }
     virtual bool removeTemp(const char *name) = 0;
 // IGraphTempHandler
-    virtual void registerFile(const char *name, graph_id graphId, unsigned usageCount, bool temp, WUFileKind fileKind, StringArray *clusters);
-    virtual void deregisterFile(const char *name, bool kept=false);
-    virtual void clearTemps();
-    virtual IFileUsageIterator *getIterator()
+    virtual CFileUsageEntry * registerFile(const char *name, graph_id graphId, unsigned usageCount, bool temp, WUFileKind fileKind, StringArray *clusters) override;
+    virtual void deregisterFile(const char *name, bool kept=false) override;
+    virtual void clearTemps() override;
+    virtual IFileUsageIterator *getIterator() override
     {
         class CIterator : implements IFileUsageIterator, public CInterface
         {
@@ -575,6 +591,7 @@ public:
         };
         return new CIterator(tmpFiles);
     }
+    virtual void serializeUsageStats(MemoryBuffer &mb, graph_id gid) override;
 };
 
 class graph_decl CGraphStub : public CInterface, implements IThorChildGraph
@@ -1092,12 +1109,12 @@ protected:
     bool timeActivities; // purely for access efficiency
     bool receiving, cancelledReceive, initialized, reInit;
     Owned<IThorGraphResults> ownedResults; // NB: probably only to be used by loop results
-    CRuntimeStatisticCollection stats;
+    const StatisticsMapping &statsMapping;
 
 public:
     CActivityBase(CGraphElementBase *container, const StatisticsMapping &statsMapping);
     ~CActivityBase();
-    CRuntimeStatisticCollection &queryStats() { return stats; }
+    const StatisticsMapping &queryStatsMapping() const { return statsMapping; }
     inline activity_id queryId() const { return container.queryId(); }
     CGraphElementBase &queryContainer() const { return container; }
     CJobBase &queryJob() const { return container.queryJob(); }

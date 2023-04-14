@@ -33,6 +33,7 @@ using namespace cryptohelper;
 #ifndef _NO_LDAP
 #include "seclib.hpp"
 #include "secloader.hpp"
+#include "ldapsecurity.ipp"
 #include "ldapsecurity.hpp"
 
 static void ignoreSigPipe()
@@ -138,7 +139,7 @@ public:
         {
             username.append(filesdefaultuser);
             decrypt(password, filesdefaultpassword);
-            OWARNLOG("Missing credentials, injecting deprecated filesdefaultuser");
+            OWARNLOG("Missing credentials, injecting deprecated filesdefaultuser for request %s %s", nullText(key), nullText(obj));
         }
 
         Owned<ISecUser> user = ldapsecurity->createUser(username);
@@ -162,7 +163,7 @@ public:
             if (taken>100)
 #endif
             {
-                PROGLOG("LDAP: getPermissions(%s) scope=%s user=%s returns %d in %d ms",key?key:"NULL",obj?obj:"NULL",username.str(),perm,taken);
+                PROGLOG("LDAP: getPermissions(%s) scope=%s user=%s returns %d in %d ms", nullText(key), nullText(obj),username.str(),perm,taken);
             }
             if (auditflags&DALI_LDAP_AUDIT_REPORT) {
                 StringBuffer auditstr;
@@ -225,9 +226,10 @@ public:
 
         if (!authenticated)
         {
-            user->credentials().setPassword(password);
-            if (!ldapsecurity->authenticateUser(*user, &superUser) || !superUser)
+            CLdapSecManager* ldapSecMgr = dynamic_cast<CLdapSecManager*>(ldapsecurity.get());
+            if (!ldapSecMgr || !ldapSecMgr->isSuperUser(user))
             {
+                DBGLOG("LDAP: EnableScopeScans caller %s must be an LDAP HPCC Admin", username.str());
                 *err = -1;
                 return false;
             }

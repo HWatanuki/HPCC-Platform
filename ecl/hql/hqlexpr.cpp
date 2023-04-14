@@ -72,6 +72,8 @@
 //#define PARANOID
 //#define SEARCH_NAME1   "v1"
 //#define SEARCH_NAME2   "v2"
+//#define SEARCH_NAME3   "v3"
+//#define SEARCH_NAME4   "v4"
 //#define CHECK_SELSEQ_CONSISTENCY
 #define VERIFY_EXPR_INTEGRITY
 #endif
@@ -79,7 +81,7 @@
 //#define TRACK_EXPRESSION          // define this and update isTrackingExpression() to monitor expressions through transforms
 //#define TRACK_MAX_ANNOTATIONS     // define this to investigate very heavily nested annotations
 
-#if defined(SEARCH_NAME1) || defined(SEARCH_NAME2)
+#if defined(SEARCH_NAME1) || defined(SEARCH_NAME2) || defined(SEARCH_NAME3) || defined(SEARCH_NAME4)
 static void debugMatchedName() {}
 #endif
 
@@ -417,16 +419,10 @@ static unsigned insideCreate;
 #endif
 
 #ifdef _REPORT_EXPRESSION_LEAKS
-static char activeSource[256];
+static StringBuffer activeSource;
 void setActiveSource(const char * filename)
 {
-    if (filename)
-    {
-        strncpy(activeSource, filename, sizeof(activeSource));
-        activeSource[sizeof(activeSource)-1]= 0;
-    }
-    else
-        activeSource[0] = 0;
+    activeSource.set(filename);
 }
 #else
 void setActiveSource(const char * filename)
@@ -526,7 +522,7 @@ MODULE_EXIT()
             IHqlExpression & ret = iter.query();
         }
 #endif
-        fprintf(stderr, "%s Hash table contains %d entries\n", activeSource, exprCache->count());
+        fprintf(stderr, "%s Hash table contains %d entries\n", activeSource.str(), exprCache->count());
     }
 #endif
 
@@ -3484,6 +3480,9 @@ IHqlExpression * ensureExprType(IHqlExpression * expr, ITypeInfo * type, node_op
         assertex(recordTypesMatch(type, exprType));
         return createNullExpr(type);
     }
+
+    if ((op == no_list) && (expr->numChildren() == 0))
+        return createNullExpr(type);
 
     IValue * value = expr->queryValue();
     if (value && type->assignableFrom(exprType))    // this last condition is unnecessary, but changes some persist crcs if removed
@@ -10556,6 +10555,14 @@ CHqlVariable::CHqlVariable(node_operator _op, const char * _name, ITypeInfo * _t
     if (strcmp(_name, SEARCH_NAME2) == 0)
         debugMatchedName();
 #endif
+#ifdef SEARCH_NAME3
+    if (strcmp(_name, SEARCH_NAME3) == 0)
+        debugMatchedName();
+#endif
+#ifdef SEARCH_NAME4
+    if (strcmp(_name, SEARCH_NAME4) == 0)
+        debugMatchedName();
+#endif
     name.set(_name);
     infoFlags |= HEFtranslated;
     infoFlags |= HEFhasunadorned;
@@ -16995,6 +17002,7 @@ IHqlExpression * queryNonDelayedBaseAttribute(IHqlExpression * expr)
             expr = expr->queryDefinition();
             break;
         case no_funcdef:
+        case no_alias_scope:
             expr = expr->queryChild(0);
             break;
         case no_delayedselect:

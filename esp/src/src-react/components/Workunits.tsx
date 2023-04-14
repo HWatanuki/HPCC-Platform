@@ -15,6 +15,7 @@ import { pushParams } from "../util/history";
 import { Fields } from "./forms/Fields";
 import { Filter } from "./forms/Filter";
 import { ShortVerticalDivider } from "./Common";
+import { QuerySortItem } from "src/store/Store";
 
 const logger = scopedLogger("src-react/components/Workunits.tsx");
 
@@ -33,7 +34,7 @@ const FilterFields: Fields = {
     "EndDate": { type: "datetime", label: nlsHPCC.ToDate },
 };
 
-function formatQuery(_filter, mine, currentUser) {
+function formatQuery(_filter): { [id: string]: any } {
     const filter = { ..._filter };
     if (filter.LastNDays) {
         const end = new Date();
@@ -50,8 +51,11 @@ function formatQuery(_filter, mine, currentUser) {
             filter.EndDate = new Date(filter.EndDate).toISOString();
         }
     }
-    if (mine === true) {
-        filter.Owner = currentUser?.username;
+    if (filter.Type === true) {
+        filter.Type = "archived workunits";
+    }
+    if (filter.Type === true) {
+        filter.Type = "archived workunits";
     }
     logger.debug(filter);
     return filter;
@@ -68,28 +72,32 @@ const defaultUIState = {
 };
 
 interface WorkunitsProps {
-    filter?: object;
+    filter?: { [id: string]: any };
+    sort?: QuerySortItem;
     store?: WUQueryStore;
+    page?: number;
 }
 
 const emptyFilter = {};
+const defaultSort = { attribute: "Wuid", descending: true };
 
 export const Workunits: React.FunctionComponent<WorkunitsProps> = ({
     filter = emptyFilter,
+    sort = defaultSort,
+    page = 1,
     store
 }) => {
 
     const hasFilter = React.useMemo(() => Object.keys(filter).length > 0, [filter]);
 
     const [showFilter, setShowFilter] = React.useState(false);
-    const [mine, setMine] = React.useState(false);
     const { currentUser } = useMyAccount();
     const [uiState, setUIState] = React.useState({ ...defaultUIState });
 
     //  Grid ---
     const query = React.useMemo(() => {
-        return formatQuery(filter, mine, currentUser);
-    }, [currentUser, filter, mine]);
+        return formatQuery(filter);
+    }, [filter]);
 
     const gridStore = React.useMemo(() => {
         return store ? store : CreateWUQueryStore();
@@ -99,16 +107,18 @@ export const Workunits: React.FunctionComponent<WorkunitsProps> = ({
         persistID: "workunits",
         store: gridStore,
         query,
-        sort: { attribute: "Wuid", descending: true },
+        sort,
+        pageNum: page,
         filename: "workunits",
         columns: {
             col1: {
-                width: 27,
+                width: 16,
                 selectorType: "checkbox"
             },
             Protected: {
                 headerIcon: "LockSolid",
-                width: 25,
+                headerTooltip: nlsHPCC.Protected,
+                width: 16,
                 sortable: true,
                 formatter: React.useCallback(function (_protected) {
                     if (_protected === true) {
@@ -128,16 +138,22 @@ export const Workunits: React.FunctionComponent<WorkunitsProps> = ({
                     </>;
                 }, [])
             },
-            Owner: { label: nlsHPCC.Owner, width: 90 },
-            Jobname: { label: nlsHPCC.JobName, width: 350 },
-            Cluster: { label: nlsHPCC.Cluster, width: 60 },
-            RoxieCluster: { label: nlsHPCC.RoxieCluster, width: 90 },
+            Owner: { label: nlsHPCC.Owner, width: 80 },
+            Jobname: { label: nlsHPCC.JobName },
+            Cluster: { label: nlsHPCC.Cluster },
+            RoxieCluster: { label: nlsHPCC.RoxieCluster },
             State: { label: nlsHPCC.State, width: 60 },
             TotalClusterTime: {
-                label: nlsHPCC.TotalClusterTime, width: 115,
+                label: nlsHPCC.TotalClusterTime, width: 120,
                 renderCell: React.useCallback(function (object, value, node) {
                     domClass.add(node, "justify-right");
                     node.innerText = value;
+                }, [])
+            },
+            CompileCost: {
+                label: nlsHPCC.CompileCost, width: 100,
+                formatter: React.useCallback(function (cost, row) {
+                    return `${formatCost(cost)}`;
                 }, [])
             },
             ExecuteCost: {
@@ -155,18 +171,27 @@ export const Workunits: React.FunctionComponent<WorkunitsProps> = ({
         }
     });
 
+    const doActionWithWorkunits = React.useCallback(async (action: "Delete" | "Abort") => {
+        const unknownWUs = selection.filter(wu => wu.State === "unknown");
+        if (action === "Delete" && unknownWUs.length) {
+            await WsWorkunits.WUAction(unknownWUs, "SetToFailed");
+        }
+        await WsWorkunits.WUAction(selection, action);
+        refreshTable(true);
+    }, [refreshTable, selection]);
+
     const [DeleteConfirm, setShowDeleteConfirm] = useConfirm({
         title: nlsHPCC.Delete,
         message: nlsHPCC.DeleteSelectedWorkunits,
         items: selection.map(s => s.Wuid),
-        onSubmit: React.useCallback(async () => {
-            const unknownWUs = selection.filter(wu => wu.State === "unknown");
-            if (unknownWUs.length) {
-                await WsWorkunits.WUAction(unknownWUs, "SetToFailed");
-            }
-            await WsWorkunits.WUAction(selection, "Delete");
-            refreshTable(true);
-        }, [refreshTable, selection])
+        onSubmit: () => doActionWithWorkunits("Delete")
+    });
+
+    const [AbortConfirm, setShowAbortConfirm] = useConfirm({
+        title: nlsHPCC.Abort,
+        message: nlsHPCC.AbortSelectedWorkunits,
+        items: selection.map(s => s.Wuid),
+        onSubmit: () => doActionWithWorkunits("Abort")
     });
 
     //  Filter  ---
@@ -205,16 +230,20 @@ export const Workunits: React.FunctionComponent<WorkunitsProps> = ({
         },
         {
             key: "abort", text: nlsHPCC.Abort, disabled: !uiState.hasNotCompleted,
-            onClick: () => { WsWorkunits.WUAction(selection, "Abort"); }
+            onClick: () => setShowAbortConfirm(true)
         },
         { key: "divider_3", itemType: ContextualMenuItemType.Divider, onRender: () => <ShortVerticalDivider /> },
         {
             key: "protect", text: nlsHPCC.Protect, disabled: !uiState.hasNotProtected,
-            onClick: () => { WsWorkunits.WUAction(selection, "Protect"); }
+            onClick: () => {
+                WsWorkunits.WUAction(selection, "Protect").then(() => refreshTable());
+            }
         },
         {
             key: "unprotect", text: nlsHPCC.Unprotect, disabled: !uiState.hasProtected,
-            onClick: () => { WsWorkunits.WUAction(selection, "Unprotect"); }
+            onClick: () => {
+                WsWorkunits.WUAction(selection, "Unprotect").then(() => refreshTable());
+            }
         },
         { key: "divider_4", itemType: ContextualMenuItemType.Divider, onRender: () => <ShortVerticalDivider /> },
         {
@@ -222,10 +251,17 @@ export const Workunits: React.FunctionComponent<WorkunitsProps> = ({
             onClick: () => { setShowFilter(true); }
         },
         {
-            key: "mine", text: nlsHPCC.Mine, disabled: !currentUser, iconProps: { iconName: "Contact" }, canCheck: true, checked: mine,
-            onClick: () => { setMine(!mine); }
+            key: "mine", text: nlsHPCC.Mine, disabled: !currentUser?.username, iconProps: { iconName: "Contact" }, canCheck: true, checked: filter.Owner === currentUser.username,
+            onClick: () => {
+                if (filter.Owner === currentUser.username) {
+                    filter.Owner = "";
+                } else {
+                    filter.Owner = currentUser.username;
+                }
+                pushParams(filter);
+            }
         },
-    ], [currentUser, hasFilter, mine, refreshTable, selection, setShowDeleteConfirm, store, uiState.hasNotCompleted, uiState.hasNotProtected, uiState.hasProtected, uiState.hasSelection]);
+    ], [currentUser, filter, hasFilter, refreshTable, selection, setShowAbortConfirm, setShowDeleteConfirm, store, uiState.hasNotCompleted, uiState.hasNotProtected, uiState.hasProtected, uiState.hasSelection]);
 
     //  Selection  ---
     React.useEffect(() => {
@@ -269,6 +305,7 @@ export const Workunits: React.FunctionComponent<WorkunitsProps> = ({
                 }</SizeMe>
                 <Filter showFilter={showFilter} setShowFilter={setShowFilter} filterFields={filterFields} onApply={pushParams} />
                 <DeleteConfirm />
+                <AbortConfirm />
             </>
         }
         footer={<GridPagination />}

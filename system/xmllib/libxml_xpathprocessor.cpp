@@ -967,7 +967,7 @@ public:
 
     StringBuffer &toXMLNodeSet(xmlXPathObjectPtr obj, StringBuffer &xml)
     {
-        if (!obj || !obj->type==XPATH_NODESET || !obj->nodesetval || !obj->nodesetval->nodeTab || obj->nodesetval->nodeNr<1)
+        if (!obj || obj->type!=XPATH_NODESET || !obj->nodesetval || !obj->nodesetval->nodeTab || obj->nodesetval->nodeNr<1)
             return xml;
         xmlNodePtr *nodes = obj->nodesetval->nodeTab;
         for (int i = 0; i < obj->nodesetval->nodeNr; i++)
@@ -978,46 +978,47 @@ public:
         return xml;
     }
 
-
-    virtual void trace(const char *label, ICompiledXpath *select, bool useStdOut) override
+    virtual bool selectText(ICompiledXpath* select, StringBuffer& content, bool& isValue)
     {
         xmlNodePtr current = m_xpathContext->node;
         if (!current || !select)
-            return;
+            return false;
         CLibCompiledXpath * ccXpath = static_cast<CLibCompiledXpath *>(select);
         xmlXPathObjectPtr obj = primaryContext->evaluate(ccXpath->getCompiledXPathExpression(), ccXpath->getXpath());
         if (!obj)
-            throw MakeStringException(XPATHERR_InvalidState, "XpathContext:trace xpath syntax error '%s'", ccXpath->getXpath());
-        StringBuffer content;
+            throw makeStringExceptionV(XPATHERR_InvalidState, "XpathContext:selectText xpath syntax error '%s'", ccXpath->getXpath());
+        bool result = true;
         switch (obj->type)
         {
             case XPATH_NODESET:
-                toXMLNodeSet(obj, content);
+                if (isValue)
+                {
+                    if (obj->nodesetval->nodeNr > 1)
+                    {
+                        isValue = false;
+                        result = false;
+                    }
+                    else
+                    {
+                        evaluateAsString(obj, content, ccXpath->getXpath());
+                        obj = nullptr; // freed above
+                    }
+                }
+                else
+                    toXMLNodeSet(obj, content);
                 break;
             case XPATH_BOOLEAN:
             case XPATH_NUMBER:
             case XPATH_STRING:
                 append(content, obj);
+                isValue = true;
                 break;
             default:
+                result = false;
                 break;
         }
-        if (useStdOut)
-        {
-            if (!isEmptyString(label))
-                printf("%s %s\n", label, content.str());
-            else if (content.length())
-                printf("%s\n", content.str());
-        }
-        else
-        {
-            if (!isEmptyString(label))
-                LOG(MCuserInfo, "%s %s", label, content.str());
-            else if (content.length())
-                LOG(MCuserInfo, "%s", content.str());
-        }
-
         xmlXPathFreeObject(obj);
+        return result;
     }
 
     virtual bool addObjectVariable(const char * name, xmlXPathObjectPtr obj, CLibXpathScope *scope)
@@ -1146,6 +1147,15 @@ public:
         return addStringVariable(name, value, getCurrentScope());
     }
 
+    virtual bool checkParameterName(const char * name) override
+    {
+        if (hasVariable(name, nullptr, getCurrentScope()))
+            return true;
+        if (findInput(name))
+            return true;
+        return false;
+    }
+
     virtual bool addXpathVariable(const char * name, const char * xpath) override
     {
         return addXpathVariable(name, xpath, nullptr);
@@ -1196,7 +1206,7 @@ public:
     virtual StringBuffer &toXml(const char *xpath, StringBuffer & xml) override
     {
         xmlXPathObjectPtr obj = evaluate(xpath);
-        if (!obj || !obj->type==XPATH_NODESET || !obj->nodesetval || !obj->nodesetval->nodeTab || obj->nodesetval->nodeNr!=1)
+        if (!obj || obj->type!=XPATH_NODESET || !obj->nodesetval || !obj->nodesetval->nodeTab || obj->nodesetval->nodeNr!=1)
             return xml;
         xmlNodePtr node = obj->nodesetval->nodeTab[0];
         if (!node)
@@ -1624,44 +1634,37 @@ static const char *queryAttrValue(xmlNodePtr node, const char *name)
     return (const char *) att->children->content;
 }
 
-class CEsdlScriptContext : public CInterfaceOf<IEsdlScriptContext>
+class CSectionalXmlDocModel : public CInterfaceOf<ISectionalXmlDocModel>
 {
 private:
-    void *espCtx = nullptr;
+    void *userData = nullptr;
     xmlDocPtr doc = nullptr;
     xmlNodePtr root = nullptr;
     xmlXPathContextPtr xpathCtx = nullptr;
-    IInterface *functionRegister = nullptr;
-    bool traceToStdout = false;
-    bool testMode = false;
 
 public:
-    CEsdlScriptContext(void *ctx, IInterface *_functionRegister) : espCtx(ctx), functionRegister(_functionRegister)
+    CSectionalXmlDocModel(void *_userData) : userData(_userData)
     {
         doc =   xmlParseDoc((const xmlChar *) "<esdl_script_context/>");
         xpathCtx = xmlXPathNewContext(doc);
         if(xpathCtx == nullptr)
-            throw MakeStringException(-1, "CEsdlScriptContext: Unable to create new xPath context");
+            throw MakeStringException(-1, "CSectionalXmlDocModel: Unable to create new xPath context");
 
         root = xmlDocGetRootElement(doc);
         xpathCtx->node = root;
     }
 
 private:
-    ~CEsdlScriptContext()
+    ~CSectionalXmlDocModel()
     {
         xmlXPathFreeContext(xpathCtx);
         xmlFreeDoc(doc);
-    }
-    virtual void *queryEspContext() override
-    {
-        return espCtx;
     }
     inline void sanityCheckSectionName(const char *name)
     {
         //sanity check the name, not a full validation
         if (isEmptyString(name) || strpbrk(name, "/[]()*?"))
-            throw MakeStringException(-1, "CEsdlScriptContext:removeSection invalid section name %s", name);
+            throw MakeStringException(-1, "CSectionalXmlDocModel:removeSection invalid section name %s", name);
     }
     xmlNodePtr getSectionNode(const char *name, const char *xpath="*[1]")
     {
@@ -1827,14 +1830,14 @@ private:
 
         xmlParserCtxtPtr parserCtx = xmlCreateDocParserCtxt((const unsigned char *)xml);
         if (!parserCtx)
-            throw MakeStringException(-1, "CEsdlScriptContext:setContent: Unable to init parse of %s XML content", section);
+            throw MakeStringException(-1, "CSectionalXmlDocModel:setContent: Unable to init parse of %s XML content", section);
         parserCtx->node = sect;
         xmlParseDocument(parserCtx);
         int wellFormed = parserCtx->wellFormed;
         xmlFreeDoc(parserCtx->myDoc); //dummy document
         xmlFreeParserCtxt(parserCtx);
         if (!wellFormed)
-           throw MakeStringException(-1, "CEsdlScriptContext:setContent xml string: Unable to parse %s XML content", section);
+           throw MakeStringException(-1, "CSectionalXmlDocModel:setContent xml string: Unable to parse %s XML content", section);
     }
     virtual void appendContent(const char *section, const char *name, const char *xml) override
     {
@@ -1976,7 +1979,7 @@ private:
         {
             sect = getSectionNode(section);
             if (!sect)
-                throw MakeStringException(-1, "CEsdlScriptContext:createXpathContext: section not found %s", section);
+                throw MakeStringException(-1, "CSectionalXmlDocModel:createXpathContext: section not found %s", section);
         }
         CLibXpathContext *xpathContext = new CLibXpathContext(static_cast<CLibXpathContext *>(primaryContext), doc, sect, strictParameterDeclaration);
         StringBuffer val;
@@ -1996,35 +1999,15 @@ private:
         ensureCopiedSection(tgtSection, srcSection, false);
         return createXpathContext(primaryContext, tgtSection, strictParameterDeclaration);
     }
-    virtual void cleanupBetweenScripts() override
+    virtual void cleanupTemporaries() override
     {
         removeSection("temporaries");
     }
-    void setTraceToStdout(bool val) override //keep it simple for now.  default is to use jlog.  This flag may go away when we give more control over tracing
-    {
-        traceToStdout = val;
-    }
-    bool getTraceToStdout() override
-    {
-        return traceToStdout;
-    }
-    virtual IInterface *queryFunctionRegister() override
-    {
-        return functionRegister;
-    }
-    void setTestMode(bool val) override //enable features that help with unit testing but should never be used in production
-    {
-        testMode = val;
-    }
-    bool getTestMode() override
-    {
-        return testMode;
-    }
 };
 
-IEsdlScriptContext *createEsdlScriptContext(void * espCtx, IInterface *functionRegister)
+ISectionalXmlDocModel *createSectionalXmlDocModel(void * userData)
 {
-    return new CEsdlScriptContext(espCtx, functionRegister);
+    return new CSectionalXmlDocModel(userData);
 }
 
 extern IXpathContext* getXpathContext(const char * xmldoc, bool strictParameterDeclaration, bool removeDocNamespaces)
@@ -2053,13 +2036,13 @@ public:
     }
 
 private:
-    IEsdlScriptContext* createScriptContext(const char* section, const char* content)
+    ISectionalXmlDocModel* createScriptContext(const char* section, const char* content)
     {
-        Owned<IEsdlScriptContext> ctx(createEsdlScriptContext(nullptr, nullptr)); // context holds but does not use IEspContext* parameter
+        Owned<ISectionalXmlDocModel> ctx(createSectionalXmlDocModel(nullptr)); // context holds but does not use the usage parameter
         ctx->setContent(section, content);
         return ctx.getClear();
     }
-    IXpathContext* createXPathContext(IEsdlScriptContext* scriptCtx, const char* section)
+    IXpathContext* createXPathContext(ISectionalXmlDocModel* scriptCtx, const char* section)
     {
         Owned<IXpathContext> xpathCtx;
         try
@@ -2082,11 +2065,11 @@ private:
     bool checkXmlWriterUtf8(const char* test, const char* name, const char* value)
     {
         static constexpr const char* section = "writer";
-        Owned<IEsdlScriptContext>    scriptCtx(createScriptContext(section, "<this_node_is_required_to_satisfy_createXPathContext/>"));
+        Owned<ISectionalXmlDocModel>    scriptCtx(createScriptContext(section, "<this_node_is_required_to_satisfy_createXPathContext/>"));
         Owned<IXpathContext>         xpathCtx(createXPathContext(scriptCtx, section));
         Owned<IXmlWriter>            writer(xpathCtx->createXmlWriter());
         StringBuffer                 stored;
-    
+
         writer->outputUtf8(rtlUtf8Length(unsigned(strlen(value)), value), value, name);
         if (!xpathCtx->evaluateAsString(name, stored))
             fprintf(stdout, "\n%s: evaluation of '%s' failed\n", test, name);

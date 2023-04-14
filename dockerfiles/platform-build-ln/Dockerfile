@@ -28,7 +28,7 @@ ARG BUILD_USER=hpcc-systems
 RUN echo BUILD_USER is ${BUILD_USER}
 ARG GITHUB_TOKEN
 ARG BUILD_TAG=none
-RUN git clone https://${GITHUB_TOKEN}@github.com/${BUILD_USER}/LN.git && \
+RUN git clone https://oauth2:${GITHUB_TOKEN}@github.com/${BUILD_USER}/LN.git && \
     cd LN && \
     git submodule update --init --recursive
 
@@ -43,7 +43,7 @@ WORKDIR /hpcc-dev/lnbuild
 
 ARG BUILD_TYPE=RelWithDebInfo
 ARG USE_CPPUNIT=1
-RUN cmake /hpcc-dev/LN -Wno-dev -DCONTAINERIZED=1 -DINCLUDE_PLUGINS=1 -DCMAKE_BUILD_TYPE=${BUILD_TYPE} -DUSE_PYTHON2=0 -DSUPPRESS_SPARK=1 -DUSE_CPPUNIT=${USE_CPPUNIT} -DINCLUDE_EE_PLUGINS=1
+RUN cmake /hpcc-dev/LN -Wno-dev -DCONTAINERIZED=1 -DINCLUDE_PLUGINS=1 -DCMAKE_BUILD_TYPE=${BUILD_TYPE} -DUSE_PYTHON2=0 -DUSE_CPPUNIT=${USE_CPPUNIT} -DINCLUDE_EE_PLUGINS=1
 
 ARG BUILD_THREADS
 RUN if [ -n "${BUILD_THREADS}" ] ; then echo ${BUILD_THREADS} > ~/build_threads; else echo $(nproc) > ~/build_threads ; fi

@@ -646,39 +646,20 @@ void close_program(HANDLE handle)
 
 #endif
 
-#ifndef _WIN32
-bool CopyFile(const char *file, const char *newfile, bool fail)
+bool wait_program_timeout(HANDLE handle,DWORD &runcode,unsigned timeoutMs)
 {
-    struct stat s;
-    if ((fail) && (0 == stat((char *)newfile, &s))) return false;
-    FILE *in=fopen(file,"rb"), *out=fopen(newfile,"wb");
-    try
+    CTimeMon timer(timeoutMs);
+    while (true)
     {
-        if (!in)
-            throw MakeStringException(-1, "failed to open %s for copy",file);
-        if (!out)
-            throw MakeStringException(-1, "failed to create %s",newfile);
-        char b[1024];
-        while (true)
-        {
-            int c=fread(b,1,sizeof(b),in);
-            if (!c) break;
-            if (!fwrite(b,c,1,out)) throw MakeStringException(-1, "failed to copy file %s to %s",file,newfile);
-        }
-        fclose(in);
-        fclose(out);
-        stat((char *)file, &s);
-        chmod(newfile, s.st_mode);
-    } catch (...)
-    {
-        if (in)  fclose(in);
-        if (out) fclose(out);
-        return false;
+        if (wait_program(handle,runcode,false))
+            break;
+        unsigned remaining;
+        if (timer.timedout(&remaining))
+            return false;
+        MilliSleep(remaining > 1000 ? 1000 : remaining);
     }
-
     return true;
 }
-#endif
 
 //========================================================================================================================
 
@@ -1035,13 +1016,13 @@ void runKubectlCommand(const char *title, const char *cmd, const char *input, St
         output = &_output;
     unsigned ret = runExternalCommand(title, *output, error, cmd, input, ".", nullptr);
     if (output->length())
-        MLOG(MCExtraneousInfo, unknownJob, "%s: ret=%u, stdout=%s", cmd, ret, output->trimRight().str());
+        MLOG(MCdebugInfo, unknownJob, "%s: ret=%u, stdout=%s", cmd, ret, output->trimRight().str());
     if (error.length())
-        MLOG(MCinternalError, unknownJob, "%s: ret=%u, stderr=%s", cmd, ret, error.trimRight().str());
+        MLOG(MCdebugError, unknownJob, "%s: ret=%u, stderr=%s", cmd, ret, error.trimRight().str());
     if (ret)
     {
         if (input)
-            MLOG(MCinternalError, unknownJob, "Using input %s", input);
+            MLOG(MCdebugError, unknownJob, "Using input %s", input);
         throw makeStringExceptionV(0, "Failed to run %s: error %u: %s", cmd, ret, error.str());
     }
 }
@@ -1115,4 +1096,33 @@ std::pair<std::string, unsigned> getDafileServiceFromConfig(const char *applicat
     if (0 == externalService.second)
         throw makeStringExceptionV(-1, "dafilesrv '%s': external service port not defined", dafilesrvName.str());
     return externalService;
+}
+
+// checks if 'name' is an internal environment variable (prefixed with 'HPCC_')
+// if !matches : returns null
+// if matches  : returns allocated copy of configured value or defaultValue if not set.
+// NB: Only HPCC_DEPLOYMENT currently supported, but could be extended.
+char *getHPCCEnvVal(const char *name, const char *defaultValue)
+{
+    constexpr const char *builtinPrefix = "HPCC_";
+    if (!startsWith(name, builtinPrefix))
+        return nullptr;
+    const char *hpccEnvVar = name+strlen(builtinPrefix);
+    StringBuffer val;
+    bool valSet = false;
+    if (streq(hpccEnvVar, "DEPLOYMENT"))
+    {
+        if (isContainerized())
+            valSet = getGlobalConfigSP()->getProp("@deploymentName", val);
+        else
+            valSet = queryEnvironmentConf().getProp("deploymentName", val);
+    }
+    // else - just "DEPLOYMENT" for now.
+
+    if (valSet)
+        return val.detach();
+    else if (defaultValue)
+        return strdup(defaultValue);
+    else
+        return strdup("");
 }

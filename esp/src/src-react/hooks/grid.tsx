@@ -1,9 +1,10 @@
 import * as React from "react";
-import { DetailsList, DetailsListLayoutMode, Dropdown, IColumn, ICommandBarItemProps, IDetailsHeaderProps, IStackProps, mergeStyleSets, Selection, Stack, TooltipHost, TooltipOverflowMode } from "@fluentui/react";
+import { DetailsList, DetailsListLayoutMode, Dropdown, IColumn, ICommandBarItemProps, IDetailsHeaderProps, IDetailsListStyles, IStackProps, mergeStyleSets, Selection, Stack, TooltipHost, TooltipOverflowMode } from "@fluentui/react";
 import { useConst } from "@fluentui/react-hooks";
 import { BaseStore, Memory, QueryRequest, QuerySortItem } from "src/store/Memory";
 import nlsHPCC from "src/nlsHPCC";
 import { createCopyDownloadSelection } from "../components/Common";
+import { updatePage, updateSort } from "../util/history";
 import { DojoGrid } from "../components/DojoGrid";
 import { useDeepCallback, useDeepEffect, useDeepMemo } from "./deepHooks";
 import { Pagination } from "@fluentui/react-experiments/lib/Pagination";
@@ -119,7 +120,7 @@ function columnsAdapter(columns: DojoColumns, sorted?: QuerySortItem): IColumn[]
                 key,
                 name: column.label ?? key,
                 fieldName: column.field ?? key,
-                minWidth: column.width,
+                minWidth: column.width ?? 70,
                 maxWidth: column.width,
                 isResizable: true,
                 isSorted: key == attr,
@@ -152,6 +153,22 @@ interface useFluentStoreGridResponse {
     refreshTable: (clearSelection?: boolean) => void
 }
 
+const gridStyles = (height: number): Partial<IDetailsListStyles> => {
+    return {
+        root: {
+            height,
+            minHeight: height,
+            maxHeight: height,
+            selectors: { ".ms-DetailsHeader-cellName": { fontSize: "13.5px" } }
+        },
+        headerWrapper: {
+            position: "sticky",
+            top: 0,
+            zIndex: 2,
+        }
+    };
+};
+
 function useFluentStoreGrid({
     store,
     query,
@@ -175,7 +192,7 @@ function useFluentStoreGrid({
     }));
 
     const refreshTable = useDeepCallback((clearSelection = false) => {
-        if (isNaN(start) || (isNaN(count) || count === 0)) return;
+        if (isNaN(start) || isNaN(count)) return;
         if (clearSelection) {
             selectionHandler.setItems([], true);
         }
@@ -185,12 +202,17 @@ function useFluentStoreGrid({
         });
         storeQuery.then(items => {
             setItems(items);
+            setSelection(selectionHandler.getSelection());
         });
-    }, [count, selectionHandler, sorted, start, store], [query]);
+    }, [count, selectionHandler, start, store], [query, sorted]);
 
     React.useEffect(() => {
         refreshTable();
     }, [refreshTable]);
+
+    useDeepEffect(() => {
+        setSorted(sort);
+    }, [], [sort]);
 
     const fluentColumns: IColumn[] = React.useMemo(() => {
         return columnsAdapter(memoizedColumns, sorted);
@@ -214,6 +236,7 @@ function useFluentStoreGrid({
             attribute: sorted ? column.key : "",
             descending: sorted ? isSortedDescending : false
         });
+        updateSort(sorted, isSortedDescending, column.key);
     }, [memoizedColumns]);
 
     const renderDetailsHeader = React.useCallback((props: IDetailsHeaderProps, defaultRender?: any) => {
@@ -233,11 +256,12 @@ function useFluentStoreGrid({
         setKey="set"
         layoutMode={DetailsListLayoutMode.justified}
         selection={selectionHandler}
+        isSelectedOnFocus={false}
         selectionPreservedOnEmptyClick={true}
         onItemInvoked={this._onItemInvoked}
         onColumnHeaderClick={onColumnClick}
         onRenderDetailsHeader={renderDetailsHeader}
-        styles={{ root: { height, minHeight: height, maxHeight: height } }}
+        styles={gridStyles(height)}
     />, [fluentColumns, items, onColumnClick, renderDetailsHeader, selectionHandler]);
 
     const copyButtons = React.useMemo((): ICommandBarItemProps[] => [
@@ -281,6 +305,7 @@ interface useFluentPagedGridProps {
     store: BaseStore<any, any>,
     query?: QueryRequest,
     sort?: QuerySortItem,
+    pageNum?: number,
     columns: DojoColumns,
     filename: string
 }
@@ -298,13 +323,15 @@ export function useFluentPagedGrid({
     store,
     query,
     sort,
+    pageNum = 1,
     columns,
     filename
 }: useFluentPagedGridProps): useFluentPagedGridResponse {
 
-    const [page, setPage] = React.useState(0);
+    const [page, setPage] = React.useState(pageNum - 1);
+    const [sortBy, setSortBy] = React.useState(sort);
     const [pageSize, setPersistedPageSize] = useUserStore(`${persistID}_pageSize`, 25);
-    const { Grid, selection, copyButtons, total, refreshTable } = useFluentStoreGrid({ store, query, sort, start: page * pageSize, count: pageSize, columns, filename });
+    const { Grid, selection, copyButtons, total, refreshTable } = useFluentStoreGrid({ store, query, sort: sortBy, start: page * pageSize, count: pageSize, columns, filename });
     const { theme } = useUserTheme();
 
     const paginationStyles = React.useMemo(() => mergeStyleSets({
@@ -355,12 +382,24 @@ export function useFluentPagedGrid({
         }
     }, [page, pageSize, total]);
 
+    React.useEffect(() => {
+        setSortBy(sort);
+    }, [sort]);
+
+    React.useEffect(() => {
+        const _page = pageNum >= 1 ? pageNum - 1 : 0;
+        setPage(_page);
+    }, [pageNum]);
+
     const GridPagination = React.useCallback(() => {
         return <Stack horizontal className={paginationStyles.root}>
             <Stack.Item className={paginationStyles.pageControls}>
                 <Pagination
                     selectedPageIndex={page} itemsPerPage={pageSize} totalItemCount={total}
-                    pageCount={Math.ceil(total / pageSize)} format="buttons" onPageChange={index => setPage(Math.round(index))}
+                    pageCount={Math.ceil(total / pageSize)} format="buttons" onPageChange={index => {
+                        setPage(Math.round(index));
+                        updatePage(Math.round(index + 1).toString());
+                    }}
                     onRenderVisibleItemLabel={props => {
                         const start = props.selectedPageIndex === 0 ? 1 : (props.selectedPageIndex * props.itemsPerPage) + 1;
                         const end = (props.itemsPerPage * (props.selectedPageIndex + 1)) > props.totalItemCount ? props.totalItemCount : props.itemsPerPage * (props.selectedPageIndex + 1);

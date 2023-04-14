@@ -73,6 +73,7 @@ protected:
     StringAttr   m_version;
     StringAttr   m_host;
     int          m_port;
+    bool         hasPortInHost = false;
     StringAttr   m_paramstr;
     int m_supportClientXslt;
     bool         m_isForm;
@@ -149,8 +150,9 @@ public:
     virtual void setHost(const char* host) {m_host.set(host);};
     virtual StringBuffer& getHost(StringBuffer& host) {return host.append(m_host.get());};
     const char *queryHost(){return m_host.get();}
-    virtual void setPort(int port) {m_port = port;};
-    virtual int getPort() {return m_port;};
+    void setPort(int port) {m_port = port;}
+    int getPort() {return m_port;}
+    bool getHasPortInHost() const {return hasPortInHost;}
 
     void getServAddress(StringBuffer &host, short &port)
     {
@@ -408,6 +410,8 @@ public:
     virtual bool httpContentFromFile(const char *filepath);
     virtual bool handleExceptions(IXslProcessor *xslp, IMultiException *me, const char *serv, const char *meth, const char *errorXslt);
     virtual void handleExceptions(IXslProcessor *xslp, IMultiException *me, const char *serv, const char *meth, const char *errorXslt, bool logHandleExceptions);
+    virtual void setErrorMessageContent(const char* message, ESPSerializationFormat format);
+    virtual void setLogAccessErrorMessageContent(const char* message, LogAccessLogFormat format);
 
     virtual void redirect(CHttpRequest &req, const char *url)
     {

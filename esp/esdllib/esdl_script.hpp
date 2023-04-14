@@ -32,6 +32,9 @@
 
 #include "esdl_def.hpp"
 
+#include "datamaskingengine.hpp"
+#include "tracer.h"
+
 #include <map>
 #include <mutex>
 #include <thread>
@@ -42,9 +45,125 @@
 
 #define ESDL_SCRIPT_Error                         5700
 #define ESDL_SCRIPT_MissingOperationAttr          5710
+#define ESDL_SCRIPT_InvalidOperationAttr          5711
 #define ESDL_SCRIPT_UnknownOperation              5720
 
 #define ESDL_SCRIPT_Warning                       5800
+
+interface IEsdlFunctionRegister;
+
+/**
+ * @brief Script-specific context associated with a sectional document model.
+ *
+ * As a convenience, the context presents itself as the model instance with which it is used. An
+ * implementation must either be assigned or create a model instance for use.
+ */
+interface IEsdlScriptContext : extends ISectionalXmlDocModel
+{
+    virtual IEspContext* queryEspContext() const = 0;
+    virtual IEsdlFunctionRegister* queryFunctionRegister() const = 0;
+    virtual void setTraceToStdout(bool val) = 0;
+    virtual bool getTraceToStdout() const = 0;
+    virtual void setTestMode(bool val) = 0; //enable features that help with unit testing but should never be used in production
+    virtual bool getTestMode() const = 0;
+    virtual ITracer& tracerRef() const = 0;
+
+    /**
+     * @brief Attempt to enable data masking.
+     *
+     * Data masking cannot be disabled once enabled.
+     *
+     * @param domainId
+     * @param version
+     * @return true  the requested masking is enabled
+     * @return false the requested masking is not enabled, possibly because other masking is
+     *               already enabled
+     */
+    virtual bool enableMasking(const char* domainId, uint8_t version) = 0;
+
+    /**
+     * @brief Is data masking enabled?
+     *
+     * @return true  enabled
+     * @return false disabled
+     */
+    virtual bool maskingEnabled() const = 0;
+
+    /**
+     * @brief Return a new reference to the current data masking context.
+     *
+     * The result can be NULL if data masking has not been enabled.
+     *
+     * @return IDataMaskingProfileContext*
+     */
+    virtual IDataMaskingProfileContext* getMasker() const = 0;
+
+    /**
+     * @brief Update the controlling options of the `trace` operation.
+     *
+     * Has no effect if the options are already locked.
+     *
+     * @param enabled
+     * @param locked
+     */
+    virtual void setTraceOptions(bool enabled, bool locked) = 0;
+
+    /**
+     * @brief Is the `trace` operation enabled?
+     *
+     * @return true  enabled
+     * @return false disabled
+     */
+    virtual bool isTraceEnabled() const = 0;
+
+    /**
+     * @brief Are `trace` options immutable?
+     *
+     * @return true  options cannot be changed
+     * @return false options can be changed
+     */
+    virtual bool isTraceLocked() const = 0;
+
+protected:
+    /**
+     * @brief Helper class encapsulating the use of `pushMaskerScope` and `popMaskerScope`.
+     */
+    friend class EsdlScriptMaskerScope;
+
+    /**
+     * @brief Create and use a copy of the current data masking context.
+     */
+    virtual void pushMaskerScope() = 0;
+
+    /**
+     * @brief Discard the newest data masking context.
+     */
+    virtual void popMaskerScope() = 0;
+
+    /**
+     * @brief Helper class encapsulating the use of `pushTraceOptionsScope and
+     *        `popTraceOptionsScope`.
+     */
+    friend class EsdlScriptTraceOptionsScope;
+
+    /**
+     * @brief Create and use a copy of the current trace aptions values.
+     */
+    virtual void pushTraceOptionsScope() = 0;
+
+    /**
+     * @brief Discard the newest trace options values.
+     */
+    virtual void popTraceOptionsScope() = 0;
+};
+
+/**
+ * @brief Create an instance of IEsdlScriptContext.
+ *
+ * The absence of a sectional document model in the parameter list implies the returned instance
+ * is responsible for creating its own model.
+ */
+extern "C" esdl_decl IEsdlScriptContext* createEsdlScriptContext(IEspContext* espCtx, IEsdlFunctionRegister* functionRegister, IDataMaskingEngine* engine);
 
 interface IEsdlCustomTransform : extends IInterface
 {

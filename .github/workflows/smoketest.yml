@@ -31,11 +31,14 @@ name: smoketest
 env:
   cacheversion: 3
   VCPKG_BINARY_SOURCES: "clear;nuget,GitHub,read"
+  OS_DEPENDENCIES: "bison flex build-essential binutils-dev curl lsb-release libcppunit-dev python3-dev default-jdk
+    r-base-dev r-cran-rcpp r-cran-rinside r-cran-inline pkg-config libtool autotools-dev automake git cmake"
 
 on:
   pull_request:
     branches:
       - "master"
+      - "newbuild"
       - "candidate-*"
       - "!candidate-7.6.*"
       - "!candidate-7.4.*"
@@ -49,7 +52,7 @@ on:
 jobs:
   check-skip:
     # continue-on-error: true # Uncomment once integration is finished
-    runs-on: ubuntu-20.04
+    runs-on: ubuntu-22.04
     # Map a step output to a job output
     outputs:
       platform: ${{ contains(github.event.pull_request.labels.*.name, 'smoketest-force-rerun') || steps.skip_check.outputs.platform }}
@@ -65,7 +68,7 @@ jobs:
     name: Build platform and regress setup
     needs: check-skip
     if: ${{ needs.check-skip.outputs.platform || needs.check-skip.outputs.eclwatch }}
-    runs-on: ubuntu-20.04
+    runs-on: ubuntu-22.04
     timeout-minutes: 150 # the build step has its own timeout, however the job can sometimes take time to download dependencies
     outputs:
       cache-state: ${{ steps.check-cache.outputs.state }}
@@ -226,19 +229,14 @@ jobs:
           fi
         fi
 
-    - name: Dependencies20.04
+    - name: Dependencies22.04
       if: ${{ steps.check-cache.outputs.state != '' }} # if 'state' set then step needed
       run: |
         sudo apt-get update
-        sudo apt-get -yq install bison flex build-essential binutils-dev libldap2-dev libcppunit-dev libicu-dev libxslt1-dev \
-          zlib1g-dev libboost-regex-dev libarchive-dev libv8-dev default-jdk libapr1-dev libaprutil1-dev libiberty-dev \
-          libhiredis-dev libtbb-dev libxalan-c-dev libnuma-dev libevent-dev libatlas-base-dev libblas-dev python3-dev \
-          default-libmysqlclient-dev libsqlite3-dev libmemcached-dev libcurl4-openssl-dev pkg-config libtool autotools-dev automake \
-          libssl-dev xmlstarlet
+        sudo apt-get install -y ${{ env.OS_DEPENDENCIES }}
+        sudo apt-get install -y xmlstarlet
 
-        curl https://deb.nodesource.com/gpgkey/nodesource.gpg.key | sudo apt-key add -
-        sudo apt-add-repository "deb https://deb.nodesource.com/node_16.x $(lsb_release -sc) main"
-        sudo apt-get update -y
+        curl -fsSL https://deb.nodesource.com/setup_16.x | sudo -E bash -
         sudo apt-get install -y nodejs
 
         echo "node.js version = $(node --version), npm version = $(npm --version), release = $(lsb_release -sc)"
@@ -253,23 +251,28 @@ jobs:
         git checkout ${{ steps.vars.outputs.sha }}
         git submodule update --init --recursive --jobs 4
 
-    - name: "vcpkg Bootstrap"
-      if: ${{ steps.check-cache.outputs.state != '' }} # if 'state' set then step needed
-      working-directory: ./src/vcpkg
-      run: |
-        ./bootstrap-vcpkg.sh
-
     - name: "Setup NuGet credentials"
       if: ${{ steps.check-cache.outputs.state != '' }} # if 'state' set then step needed
-      working-directory: ./src/vcpkg
       run: |
-        mono `./vcpkg fetch nuget | tail -n 1` \
+        mono `vcpkg fetch nuget | tail -n 1` \
           sources add \
           -source "https://nuget.pkg.github.com/hpcc-systems/index.json" \
           -storepasswordincleartext \
           -name "GitHub" \
           -username "${{ github.actor }}" \
           -password "${{ secrets.GITHUB_TOKEN }}"
+
+    - name: "Remove builtin vcpkg"
+      if: ${{ github.event_name == matrix.event_name && needs.check-skip.outputs.platform }}
+      shell: "bash"
+      run: |
+        sudo rm -rf "$VCPKG_INSTALLATION_ROOT"
+
+    - name: "vcpkg Bootstrap"
+      if: ${{ steps.check-cache.outputs.state != '' }} # if 'state' set then step needed
+      working-directory: ./src/vcpkg
+      run: |
+        ./bootstrap-vcpkg.sh
 
     # Subsequent cache hit builds use cache-timestamp to ensure all sources are marked 'old',
     # except those changed between the cache SHA and the SHA being built.
@@ -284,7 +287,7 @@ jobs:
         rm -f CMakeCache.txt
         if [[ ! -f cache-timestamp ]]; then touch cache-timestamp; fi
         touch ../cmake-timestamp
-        `../src/vcpkg/vcpkg fetch cmake | tail -n 1` ../src -Wno-dev -DRUNTIME_USER=$(whoami) -DRUNTIME_GROUP=$(id -gn) -DDESTDIR=$(realpath ..)/install -DINCLUDE_PLUGINS=1 -DCMAKE_BUILD_TYPE=Release -DUSE_PYTHON2=0 -DUSE_PYTHON3=1 -DSUPPRESS_SPARK=1 -DUSE_CPPUNIT=1 -DUSE_CASSANDRA=Off -DCMAKE_CXX_FLAGS="-DBUILD_TAG=\\\"dummytag\\\" -DBUILD_VERSION_MAJOR=1 -DBUILD_VERSION_MINOR=1 -DBUILD_VERSION_POINT=0" -DBUILD_TAG="smoketest" -DSTRIP_RELEASE_SYMBOLS=1
+        `../src/vcpkg/vcpkg fetch cmake | tail -n 1` ../src -Wno-dev -DRUNTIME_USER=$(whoami) -DRUNTIME_GROUP=$(id -gn) -DDESTDIR=$(realpath ..)/install -DINCLUDE_PLUGINS=1 -DCMAKE_BUILD_TYPE=Release -DUSE_PYTHON2=0 -DUSE_PYTHON3=1 -DSUPPRESS_SPARK=1 -DUSE_CPPUNIT=1 -DUSE_CASSANDRA=Off -DCMAKE_CXX_FLAGS="-DBUILD_TAG=\\\"dummytag\\\" -DBUILD_VERSION_MAJOR=1 -DBUILD_VERSION_MINOR=1 -DBUILD_VERSION_POINT=0" -DBUILD_TAG="smoketest" -DSTRIP_RELEASE_SYMBOLS=0 -DCMAKE_CXX_FLAGS="-DTRACE_GLOBAL_GROUP=1"
         make -j$(nproc) install
 
     - name: build-logs-artifact
@@ -391,7 +394,7 @@ jobs:
     needs: build-and-setup
     if: ${{ needs.build-and-setup.outputs.cache-state != '' && github.event_name == 'pull_request' && needs.check-skip.outputs.platform }}
     timeout-minutes: 60 # each matrix step has its own timeout, however the job can sometimes take time to download dependencies
-    runs-on: ubuntu-20.04
+    runs-on: ubuntu-22.04
     strategy:
       fail-fast: true
       matrix:
@@ -428,15 +431,10 @@ jobs:
     - name: Prerequisites
       run: |
         sudo apt-get update
-        sudo apt-get -yq install bison flex build-essential binutils-dev libldap2-dev libcppunit-dev libicu-dev libxslt1-dev \
-          zlib1g-dev libboost-regex-dev libarchive-dev libv8-dev default-jdk libapr1-dev libaprutil1-dev libiberty-dev \
-          libhiredis-dev libtbb-dev libxalan-c-dev libnuma-dev libevent-dev libatlas-base-dev libblas-dev python3-dev \
-          default-libmysqlclient-dev libsqlite3-dev libmemcached-dev libcurl4-openssl-dev pkg-config libtool autotools-dev automake \
-          libssl-dev gdb
+        sudo apt-get install -y ${{ env.OS_DEPENDENCIES }}
+        sudo apt-get install -y gdb
 
-        curl https://deb.nodesource.com/gpgkey/nodesource.gpg.key | sudo apt-key add -
-        sudo apt-add-repository "deb https://deb.nodesource.com/node_16.x $(lsb_release -sc) main"
-        sudo apt-get update -y
+        curl -fsSL https://deb.nodesource.com/setup_16.x | sudo -E bash -
         sudo apt-get install -y nodejs
 
         echo "node.js version = $(node --version), npm version = $(npm --version), release = $(lsb_release -sc)"
@@ -464,7 +462,7 @@ jobs:
 
         # force regression suite to timeout after 28 minutes, so it captures ZAP report of any inflight hung queries
         timeoutcmd $((28 * 60)) \
-          ./ecl-test query --preAbort 'smoketest-preabort.sh' --pq 2 --target ${{ matrix.engine }} --excludeclass python2,embedded-r,embedded-js,3rdpartyservice,spray --generateStackTrace ${queries}
+          ./ecl-test query --preAbort 'smoketest-preabort.sh' --pq 2 --target ${{ matrix.engine }} --excludeclass python2,embedded-r,embedded-js,3rdpartyservice,mongodb --generateStackTrace ${queries}
         grep Failure: ${{ github.workspace }}/regress/log/${{ matrix.engine }}.*.log
         if [[ "$(grep -oP '(?<=^Failure: )[0-9]+$' ${{ github.workspace }}/regress/log/${{ matrix.engine }}.*.log)" -gt 0 ]]; then exit 1; fi
 
@@ -485,7 +483,7 @@ jobs:
     needs: build-and-setup
     if: ${{ needs.build-and-setup.outputs.cache-state != '' && github.event_name == 'pull_request' }}
     timeout-minutes: 30 # the unittests run step has its own timeout, however the job can sometimes take time to download dependencies
-    runs-on: ubuntu-20.04
+    runs-on: ubuntu-22.04
     steps:
     - uses: actions/download-artifact@v2
       with:
@@ -494,15 +492,10 @@ jobs:
     - name: Prerequisites
       run: |
         sudo apt-get update
-        sudo apt-get -yq install bison flex build-essential binutils-dev libldap2-dev libcppunit-dev libicu-dev libxslt1-dev \
-          zlib1g-dev libboost-regex-dev libarchive-dev libv8-dev default-jdk libapr1-dev libaprutil1-dev libiberty-dev \
-          libhiredis-dev libtbb-dev libxalan-c-dev libnuma-dev libevent-dev libatlas-base-dev libblas-dev python3-dev \
-          default-libmysqlclient-dev libsqlite3-dev libmemcached-dev libcurl4-openssl-dev pkg-config libtool autotools-dev automake \
-          libssl-dev gdb
+        sudo apt-get install -y ${{ env.OS_DEPENDENCIES }}
+        sudo apt-get install -y gdb
 
-        curl https://deb.nodesource.com/gpgkey/nodesource.gpg.key | sudo apt-key add -
-        sudo apt-add-repository "deb https://deb.nodesource.com/node_16.x $(lsb_release -sc) main"
-        sudo apt-get update -y
+        curl -fsSL https://deb.nodesource.com/setup_16.x | sudo -E bash -
         sudo apt-get install -y nodejs
 
         echo "node.js version = $(node --version), npm version = $(npm --version), release = $(lsb_release -sc)"
@@ -521,7 +514,7 @@ jobs:
     needs: build-and-setup
     if: ${{ needs.build-and-setup.outputs.cache-state != '' && github.event_name == 'pull_request' && needs.check-skip.outputs.eclwatch }}
     timeout-minutes: 30 # the ui-tests run step has its own timeout, however the job can sometimes take time to download dependencies
-    runs-on: ubuntu-20.04
+    runs-on: ubuntu-22.04
     steps:
     - uses: actions/download-artifact@v2
       with:
@@ -552,15 +545,10 @@ jobs:
         sudo apt-get install -y git wget net-tools
         sudo apt-get install -y tzdata unzip xvfb libxi6
         sudo apt-get install -y default-jdk
-        sudo apt-get -yq install bison flex build-essential binutils-dev libldap2-dev libcppunit-dev libicu-dev libxslt1-dev \
-          zlib1g-dev libboost-regex-dev libarchive-dev libv8-dev default-jdk libapr1-dev libaprutil1-dev libiberty-dev \
-          libhiredis-dev libtbb-dev libxalan-c-dev libnuma-dev libevent-dev libatlas-base-dev libblas-dev python3-dev \
-          default-libmysqlclient-dev libsqlite3-dev libmemcached-dev libcurl4-openssl-dev pkg-config libtool autotools-dev automake \
-          libssl-dev gdb
+        sudo apt-get install -y ${{ env.OS_DEPENDENCIES }}
+        sudo apt-get install -y gdb
 
-        curl https://deb.nodesource.com/gpgkey/nodesource.gpg.key | sudo apt-key add -
-        sudo apt-add-repository "deb https://deb.nodesource.com/node_16.x $(lsb_release -sc) main"
-        sudo apt-get update -y
+        curl -fsSL https://deb.nodesource.com/setup_16.x | sudo -E bash -
         sudo apt-get install -y nodejs
 
         echo "node.js version = $(node --version), npm version = $(npm --version), release = $(lsb_release -sc)"

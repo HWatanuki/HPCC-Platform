@@ -2,8 +2,8 @@ import * as React from "react";
 import * as ReactDOM from "react-dom";
 import { initializeIcons } from "@fluentui/react";
 import { scopedLogger } from "@hpcc-js/util";
-import { initSession } from "src/Session";
-import { userKeyValStore } from "src/KeyValStore";
+import { cookieKeyValStore, userKeyValStore } from "src/KeyValStore";
+import { ModernMode } from "src/BuildInfo";
 import { ECLWatchLogger } from "./hooks/logging";
 
 import "css!dijit-themes/flat/flat.css";
@@ -31,23 +31,40 @@ dojoConfig.urlInfo = {
 };
 dojoConfig.disableLegacyHashing = true;
 
-initSession();
-
 const store = userKeyValStore();
-store.get("ModernMode", false).then(modernMode => {
+store.getEx(ModernMode, { defaultValue: String(true) }).then(async modernMode => {
     if (modernMode === String(false)) {
         window.location.replace("/esp/files/stub.htm");
     } else {
-        import("./components/Frame").then(_ => {
-            try {
-                ReactDOM.render(
-                    <_.Frame />,
-                    document.getElementById("placeholder")
-                );
-                document.getElementById("loadingOverlay").remove();
-            } catch (e) {
-                logger.error(e);
-            }
-        });
+        const authTypeResp = await fetch("/esp/getauthtype");
+        const authType = await authTypeResp?.text() ?? "None";
+        const userStore = cookieKeyValStore();
+        const userSession = await userStore.getAll();
+        if (authType.indexOf("None") < 0 && (!userSession["ESPAuthenticated"] && (!userSession["ECLWatchUser"] || !userSession["Status"] || userSession["Status"] === "Locked"))) {
+            window.location.replace("#/login");
+            import("./components/forms/Login").then(_ => {
+                try {
+                    ReactDOM.render(
+                        <_.Login />,
+                        document.getElementById("placeholder")
+                    );
+                    document.getElementById("loadingOverlay").remove();
+                } catch (e) {
+                    logger.error(e);
+                }
+            });
+        } else {
+            import("./components/Frame").then(_ => {
+                try {
+                    ReactDOM.render(
+                        <_.Frame />,
+                        document.getElementById("placeholder")
+                    );
+                    document.getElementById("loadingOverlay").remove();
+                } catch (e) {
+                    logger.error(e);
+                }
+            });
+        }
     }
 });

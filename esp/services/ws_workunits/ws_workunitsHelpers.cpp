@@ -239,15 +239,22 @@ void WsWuInfo::readWorkunitComponentLogs(const char* outFile, unsigned maxLogRec
     else if (logFormat == LOGACCESS_LOGFORMAT_xml)
         writeStringToStream(*outIOS, "<lines>");
 
-    while (logReader->readLogEntries(logcontent.clear(), recsRead))
+    bool moreToRead = false;
+    do
     {
-        if (logFormat == LOGACCESS_LOGFORMAT_json && totalRecsRead > 0 && recsRead > 0)
+        moreToRead = logReader->readLogEntries(logcontent.clear(), recsRead);
+
+        if (recsRead > 0)
         {
-            writeCharToStream(*outIOS, ',');
+            if (logFormat == LOGACCESS_LOGFORMAT_json && totalRecsRead > 0)
+            {
+                writeCharToStream(*outIOS, ',');
+            }
+            totalRecsRead += recsRead;
+            writeStringToStream(*outIOS, logcontent.str());
         }
-        totalRecsRead += recsRead;
-        writeStringToStream(*outIOS, logcontent.str());
     }
+    while (moreToRead == true);
 
     if (totalRecsRead == maxLogRecords) //Warn of possible truncation
     {
@@ -326,7 +333,14 @@ void WsWuInfo::sendImportedWorkunitComponentLog(const char* logFile, CHttpRespon
 void WsWuInfo::sendWorkunitComponentLogs(IEspContext* context, CHttpResponse* response, WUComponentLogOptions& options)
 {
     if (!queryRemoteLogAccessor())
-        throw makeStringException(ECLWATCH_LOGACCESS_UNAVAILABLE, "WsWuInfo: Remote Log Access plug-in not available!");
+    {
+        //Called from CWsWorkunitsSoapBindingEx::onGetInstantQuery() where an exception has to be added to
+        //the response directly ('throw makeStringException()' not work).
+        response->setLogAccessErrorMessageContent("WsWuInfo: Remote Log Access plug-in not available!", options.logFormat);
+        response->setStatus(HTTP_STATUS_OK);
+        response->send();
+        return;
+    }
 
     setLogTimeRange(options.logFetchOptions, options.wuLogSearchTimeBuffSecs);
     options.logFetchOptions.setFilter(getJobIDLogAccessFilter(wuid));
@@ -400,16 +414,22 @@ unsigned WsWuInfo::sendComponentLogContent(IEspContext* context, IRemoteLogAcces
     StringBuffer logContent;
     unsigned totalRecsRead = 0;
     unsigned recsRead = 0;
-    while (logReader->readLogEntries(logContent.clear(), recsRead))
+    bool moreToRead = false;
+    do
     {
-        if (options.logFormat == LOGACCESS_LOGFORMAT_json && totalRecsRead > 0 && recsRead > 0)
-        {
-            StringBuffer s(',');
-            flusher->flushXML(s, false);
-        }
+        moreToRead = logReader->readLogEntries(logContent.clear(), recsRead);
 
-        totalRecsRead += recsRead;
-        flusher->flushXML(logContent, false);
+        if (recsRead > 0)
+        {
+            if (options.logFormat == LOGACCESS_LOGFORMAT_json && totalRecsRead > 0)
+            {
+                StringBuffer s(',');
+                flusher->flushXML(s, false);
+            }
+
+            totalRecsRead += recsRead;
+            flusher->flushXML(logContent, false);
+        }
 
         if (abortCallback.abortRequested())
         {
@@ -417,6 +437,8 @@ unsigned WsWuInfo::sendComponentLogContent(IEspContext* context, IRemoteLogAcces
             break;
         }
     }
+    while (moreToRead == true);
+
     return totalRecsRead;
 }
 
@@ -3965,7 +3987,7 @@ void CWsWuFileHelper::createThorSlaveLogfile(IConstWorkUnit* cwu, WsWuInfo& winf
 }
 #endif
 
-void CWsWuFileHelper::createZAPInfoFile(const char* url, const char* espIP, const char* thorIP, const char* problemDesc,
+void CWsWuFileHelper::createZAPInfoFile(const char* url, const char* esp, const char* thor, const char* problemDesc,
     const char* whatChanged, const char* timing, IConstWorkUnit* cwu, const char* tempDirName)
 {
     VStringBuffer fileName("%s%c%s.txt", tempDirName, PATHSEPCHAR, cwu->queryWuid());
@@ -3978,19 +4000,11 @@ void CWsWuFileHelper::createZAPInfoFile(const char* url, const char* espIP, cons
     sb.append("User:         ").append(cwu->queryUser()).append("\r\n");
     sb.append("Build Version:").append(getBuildVersion()).append("\r\n");
     sb.append("Cluster:      ").append(cwu->queryClusterName()).append("\r\n");
-    if (!isEmptyString(espIP))
-        sb.append("ESP:          ").append(espIP).append("\r\n");
-    else
-    {
-        StringBuffer espIPAddr;
-        IpAddress ipaddr = queryHostIP();
-        ipaddr.getIpText(espIPAddr);
-        sb.append("ESP:          ").append(espIPAddr.str()).append("\r\n");
-    }
+    sb.append("ESP:          ").append(esp).append("\r\n");
     if (!isEmptyString(url))
         sb.append("URL:          ").append(url).append("\r\n");
-    if (!isEmptyString(thorIP))
-        sb.append("Thor:         ").append(thorIP).append("\r\n");
+    if (!isEmptyString(thor))
+        sb.append("Thor:         ").append(thor).append("\r\n");
     outFile->write(sb.length(), sb.str());
 
     //Exceptions/Warnings/Info
@@ -4360,7 +4374,7 @@ void CWsWuFileHelper::createWUZAPFile(IEspContext& context, IConstWorkUnit* cwu,
     thorSlaveLogThreadPoolSize = _thorSlaveLogThreadPoolSize;
 
     //create WU ZAP files
-    createZAPInfoFile(request.url.str(), request.espIP.str(), request.thorIP.str(), request.problemDesc.str(), request.whatChanged.str(),
+    createZAPInfoFile(request.url.str(), request.esp.str(), request.thor.str(), request.problemDesc.str(), request.whatChanged.str(),
         request.whereSlow.str(), cwu, tempDirName);
     createZAPECLQueryArchiveFiles(cwu, tempDirName);
 

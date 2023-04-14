@@ -36,6 +36,7 @@
 #include "jutil.hpp"
 #include "jprop.hpp"
 #include "jmisc.hpp"
+#include "jtrace.hpp"
 #include "wuattr.hpp"
 #include <vector>
 #include <list>
@@ -1075,6 +1076,8 @@ public:
     WuScopeFilter & addId(const char * id);
     WuScopeFilter & setDepth(unsigned low, unsigned high);
     WuScopeFilter & addSource(const char * source);
+    WuScopeFilter & addSource(WuScopeSourceFlags source);
+    WuScopeFilter & setSources(WuScopeSourceFlags sources);
 
     WuScopeFilter & setIncludeMatch(bool value);
     WuScopeFilter & setIncludeNesting(unsigned depth);
@@ -1609,6 +1612,7 @@ extern WORKUNIT_API ILocalWorkUnit * createLocalWorkUnitFromXml(const char *XML)
 extern WORKUNIT_API ILocalWorkUnit * createLocalWorkUnit(ILoadedDllEntry * dll);
 extern WORKUNIT_API ILocalWorkUnit * createLocalWorkUnitFromFile(const char * filename);
 extern WORKUNIT_API IConstWorkUnitInfo *createConstWorkUnitInfo(IPropertyTree &p);
+extern WORKUNIT_API IWorkUnitFactory * createUnexpectedWorkUnitFactory();
 extern WORKUNIT_API StringBuffer &exportWorkUnitToXML(const IConstWorkUnit *wu, StringBuffer &str, bool unpack, bool includeProgress, bool hidePasswords);
 extern WORKUNIT_API void exportWorkUnitToBinary(const IConstWorkUnit *wu, MemoryBuffer & serialized);
 extern WORKUNIT_API void exportWorkUnitToXMLFile(const IConstWorkUnit *wu, const char * filename, unsigned extraXmlFlags, bool unpack, bool includeProgress, bool hidePasswords, bool splitStats);
@@ -1718,6 +1722,8 @@ extern WORKUNIT_API void updateWorkunitTimings(IWorkUnit * wu, StatisticScopeTyp
 extern WORKUNIT_API void aggregateStatistic(StatsAggregation & result, IConstWorkUnit * wu, const WuScopeFilter & filter, StatisticKind search);
 extern WORKUNIT_API cost_type aggregateCost(const IConstWorkUnit * wu, const char *scope=nullptr, bool excludehThor=false);
 extern WORKUNIT_API cost_type aggregateDiskAccessCost(const IConstWorkUnit * wu, const char *scope);
+extern WORKUNIT_API void gatherSpillSize(const IConstWorkUnit * wu, const char *scope, stat_type & totalSizeSpill, stat_type & peakSizeSpill);
+extern WORKUNIT_API void updateSpillSize(IWorkUnit * wu, const char * scope, StatisticScopeType scopeType);
 extern WORKUNIT_API const char *getTargetClusterComponentName(const char *clustname, const char *processType, StringBuffer &name);
 extern WORKUNIT_API void descheduleWorkunit(char const * wuid);
 #if 0
@@ -1729,10 +1735,11 @@ extern WORKUNIT_API const char * getWorkunitActionStr(WUAction action);
 extern WORKUNIT_API WUAction getWorkunitAction(const char * actionStr);
 
 extern WORKUNIT_API void addTimeStamp(IWorkUnit * wu, StatisticScopeType scopeType, const char * scope, StatisticKind kind, unsigned wfid=0);
+extern WORKUNIT_API void addTimeStamp(IWorkUnit * wu, unsigned wfid, const char * scope, StatisticKind kind);
 extern WORKUNIT_API double getMachineCostRate();
 extern WORKUNIT_API double getThorManagerRate();
 extern WORKUNIT_API double getThorWorkerRate();
-extern WORKUNIT_API double calculateThorCost(unsigned __int64 ms, unsigned clusterWidth);
+extern WORKUNIT_API double calculateThorCost(unsigned __int64 ms, unsigned numberMachines);
 
 extern WORKUNIT_API IPropertyTree * getWUGraphProgress(const char * wuid, bool readonly);
 
@@ -1765,7 +1772,6 @@ inline double calcCost(double ratePerHour, unsigned __int64 ms) { return ratePer
 
 extern WORKUNIT_API void executeThorGraph(const char * graphName, IConstWorkUnit &workunit, const IPropertyTree &config);
 
-#ifdef _CONTAINERIZED
 enum class KeepK8sJobs { none, podfailures, all };
 extern WORKUNIT_API KeepK8sJobs translateKeepJobs(const char *keepJobs);
 
@@ -1778,6 +1784,8 @@ extern WORKUNIT_API void runK8sJob(const char *componentName, const char *wuid, 
 
 // returns a vector of {pod-name, node-name} vectors,
 extern WORKUNIT_API std::vector<std::vector<std::string>> getPodNodes(const char *selector);
-#endif
+
+extern WORKUNIT_API TraceFlags loadTraceFlags(IConstWorkUnit * wu, const std::initializer_list<TraceOption> & y, TraceFlags dft);
+
 
 #endif

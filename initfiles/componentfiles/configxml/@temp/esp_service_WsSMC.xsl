@@ -145,6 +145,10 @@ This is required by its binding with ESP service '<xsl:value-of select="$espServ
             <xsl:with-param name="bindingNode" select="$bindingNode"/>
             <xsl:with-param name="authNode" select="$authNode"/>
         </xsl:apply-templates>
+        <xsl:apply-templates select="." mode="ws_resources">
+            <xsl:with-param name="bindingNode" select="$bindingNode"/>
+            <xsl:with-param name="authNode" select="$authNode"/>
+        </xsl:apply-templates>
     </xsl:template>
 
     <!-- WS-SMC -->
@@ -798,6 +802,32 @@ This is required by its binding with ESP service '<xsl:value-of select="$espServ
         </EspBinding>
     </xsl:template>
 
+    <!-- ws_resources -->
+    <xsl:template match="EspService" mode="ws_resources">
+        <xsl:param name="bindingNode"/>
+        <xsl:param name="authNode"/>
+
+        <xsl:variable name="serviceType" select="'ws_resources'"/>
+        <xsl:variable name="serviceName" select="concat($serviceType, '_', @name, '_', $process)"/>
+        <xsl:variable name="bindName" select="concat($serviceType, '_', $bindingNode/@name, '_', $process)"/>
+        <xsl:variable name="bindType" select="'ws_resourcesSoapBinding'"/>
+        <xsl:variable name="servicePlugin">
+            <xsl:call-template name="defineServicePlugin">
+                <xsl:with-param name="plugin" select="'ws_resources'"/>
+            </xsl:call-template>
+        </xsl:variable>
+        <EspService name="{$serviceName}" type="{$serviceType}" plugin="{$servicePlugin}">
+        </EspService>
+        <EspBinding name="{$bindName}" service="{$serviceName}" protocol="{$bindingNode/@protocol}" type="{$bindType}"
+            plugin="{$servicePlugin}" netAddress="0.0.0.0" port="{$bindingNode/@port}">
+            <xsl:call-template name="bindAuthentication">
+                <xsl:with-param name="bindingNode" select="$bindingNode"/>
+                <xsl:with-param name="authMethod" select="$authNode/@method"/>
+                <xsl:with-param name="service" select="'ws_resources'"/>
+            </xsl:call-template>
+        </EspBinding>
+    </xsl:template>
+
     <!-- ws_logAccess -->
     <xsl:template match="EspService" mode="ws_logaccess">
         <xsl:param name="bindingNode"/>
@@ -856,7 +886,7 @@ This is required by its binding with ESP service '<xsl:value-of select="$espServ
         <xsl:param name="bindingNode"/>
         <xsl:param name="authMethod"/>
         <xsl:param name="service"/>
-
+        <xsl:copy-of select="$bindingNode/cors"/>
         <xsl:choose>
       <xsl:when test="$authMethod='basic'">
          <Authenticate type="Basic" method="UserDefined">

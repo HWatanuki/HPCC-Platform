@@ -8,6 +8,7 @@
     "@clusterName",
     "@codeVersion",
     "@columnMapping",
+    "@compressedSize",
     "@connected",
     "@created",
     "@creator",
@@ -36,16 +37,23 @@
     "@isLibrary",
     "@isScalar",
     "@jobName",
+    "@keyedSize",
     "@libCount",
     "@localValue",
     "@mapFlags",
     "@maxActivity",
     "@minActivity",
     "@modified",
+    "@nodeSize"
     "@numclusters",
     "@numparts",
     "@numsubfiles",
+    "@numBranchNodes"
+    "@numBlobNodes"
+    "@numLeafNodes"
     "@offset",
+    "@offsetBranches",
+    "@originalBlobSize",
     "@partmask",
     "@persistent",
     "@prevenqueuedt",
@@ -63,6 +71,7 @@
     "@serverId",
     "@session",
     "@severity",
+    "@size",
     "@source",
     "@stateEx",
     "@status",
@@ -75,6 +84,7 @@
     "@target",
     "@totalThorTime",
     "@transformerEntry",
+    "@uncompressedSize"
     "@waiting",
     "@workunit",
     "@wuidVersion",

@@ -61,6 +61,7 @@ class SmartSocketEndpointArray : public SafePointerArrayOf<SmartSocketEndpoint> 
 class jlib_decl CSmartSocketFactory: public Thread,
     implements ISmartSocketFactory
 {
+protected:
     SmartSocketEndpointArray sockArray;
     Mutex lock;
 
@@ -93,7 +94,7 @@ public:
 
     ISmartSocket *connectNextAvailableSocket();
 
-    SmartSocketEndpoint *nextSmartEndpoint();
+    SmartSocketEndpoint *nextSmartEndpoint(bool validate);
     SocketEndpoint& nextEndpoint();
 
     virtual void stop();

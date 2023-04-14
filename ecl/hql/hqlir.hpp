@@ -49,6 +49,7 @@ enum
     TIRexpandSimpleTypes    = 0x00000001,
     TIRexpandAttributes     = 0x00000002,
     TIRstripAnnotatations   = 0x00000004,
+    TIRstripDebugId         = 0x00000008,
 };
 
 extern HQL_API const char * getOperatorIRText(node_operator op);
@@ -63,6 +64,7 @@ extern HQL_API void dump_ir_external(const HqlExprArray & exprs, unsigned option
 extern HQL_API void dump_ir(ITypeInfo * type1, ITypeInfo * type2);
 extern HQL_API void dump_ir(IHqlExpression * expr1, IHqlExpression * expr2);
 extern HQL_API void dump_irn(unsigned n, ...);
+extern HQL_API void dump_ir(IHqlExpression * expr1, IHqlExpression * expr2, IHqlExpression * expr3, IHqlExpression * expr4, IHqlExpression * expr5, IHqlExpression * expr6); // Useful to call from the debugger
 
 extern HQL_API void dbglogIR(IHqlExpression * expr);
 extern HQL_API void dbglogIR(ITypeInfo * type);

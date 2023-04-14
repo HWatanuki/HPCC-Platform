@@ -145,7 +145,9 @@ private:
 #define WUINFO_All                      0xFFFFFFFF
 
 static constexpr unsigned defaultMaxLogRecords = 10000;
-static constexpr unsigned defaultWULogSearchTimeBufferSecs = 600;
+static constexpr unsigned defaultWULogSearchTimeBufferSecs = 43200; // +/- 12 hours from WU creation
+                                                                    // Accounts for potential TZ discrepancy
+                                                                    // TZs and logic based on TZs should normalize to UTC instead
 static constexpr unsigned microSecsToSecDivisor = 1000000;
 
 struct WUComponentLogOptions
@@ -644,7 +646,7 @@ public:
 
 struct CWsWuZAPInfoReq
 {
-    StringBuffer wuid, espIP, url, thorIP, problemDesc, whatChanged, whereSlow, includeThorSlaveLog, zapFileName, password;
+    StringBuffer wuid, esp, url, thor, problemDesc, whatChanged, whereSlow, includeThorSlaveLog, zapFileName, password;
     StringBuffer emailFrom, emailTo, emailServer, emailSubject, emailBody;
     bool sendEmail, attachZAPReportToEmail;
     unsigned maxAttachmentSize, port;

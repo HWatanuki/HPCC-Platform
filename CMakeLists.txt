@@ -67,18 +67,13 @@
 #
 #########################################################
 
-cmake_minimum_required(VERSION 3.16.0)
+cmake_minimum_required(VERSION 3.22.1)
 
 set(HPCC_SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR})
 include(${HPCC_SOURCE_DIR}/version.cmake)
-set(CMAKE_TOOLCHAIN_FILE ${HPCC_SOURCE_DIR}/vcpkg/scripts/buildsystems/vcpkg.cmake)
-set(VCPKG_OVERLAY_PORTS ${HPCC_SOURCE_DIR}/vcpkg/overlays)
-set(VCPKG_INSTALL_OPTIONS "--clean-after-build;--downloads-root=${CMAKE_BINARY_DIR}/vcpkg_downloads;--x-buildtrees-root=${CMAKE_BINARY_DIR}/vcpkg_buildtrees;--x-packages-root=${CMAKE_BINARY_DIR}/vcpkg_packages")
-set(VCPKG_VERBOSE OFF)
-if(APPLE OR WIN32)
-    option(X_VCPKG_APPLOCAL_DEPS_INSTALL "(experimental) Automatically copy dependencies into the install target directory for executables. Requires CMake 3.14." ON)
-    set(X_VCPKG_APPLOCAL_DEPS_INSTALL ON)
-endif()
+include(${HPCC_SOURCE_DIR}/cmake_modules/options.cmake)
+include(${HPCC_SOURCE_DIR}/cmake_modules/plugins.cmake)
+include(${HPCC_SOURCE_DIR}/cmake_modules/vcpkg.cmake)
 
 project(hpccsystems-platform LANGUAGES C CXX
     VERSION ${HPCC_MAJOR}.${HPCC_MINOR}.${HPCC_POINT}.${HPCC_SEQUENCE}
@@ -171,9 +166,9 @@ if ( PLUGIN )
     HPCC_ADD_SUBDIRECTORY (plugins/mysql "MYSQLEMBED")
     HPCC_ADD_SUBDIRECTORY (plugins/exampleplugin "EXAMPLEPLUGIN")
     HPCC_ADD_SUBDIRECTORY (plugins/couchbase "COUCHBASEEMBED")
-    HPCC_ADD_SUBDIRECTORY (plugins/spark "SPARK")
     HPCC_ADD_SUBDIRECTORY (plugins/h3 "H3")
     HPCC_ADD_SUBDIRECTORY (plugins/nlp "NLP")
+    HPCC_ADD_SUBDIRECTORY (plugins/mongodb "MONGODBEMBED")
 elseif ( NOT MAKE_DOCS_ONLY )
     HPCC_ADD_SUBDIRECTORY (system)
     HPCC_ADD_SUBDIRECTORY (initfiles)
@@ -206,15 +201,14 @@ elseif ( NOT MAKE_DOCS_ONLY )
 endif()
 
 HPCC_ADD_SUBDIRECTORY(docs "PLATFORM")
-if (NOT VCPKG_APPLOCAL_DEPS)
-    if(APPLE OR WIN32)
-        HPCC_ADD_SUBDIRECTORY(lib2)
-    endif(APPLE OR WIN32)
-endif()
 
 if(APPLE)
     HPCC_ADD_SUBDIRECTORY(package)
 endif(APPLE)
+
+if (NOT CLIENTTOOLS_ONLY)
+    install(DIRECTORY ${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/include DESTINATION ${COMPONENTFILES_DIR}/cl FILES_MATCHING PATTERN "*")
+endif()
 
 ###
 ## CPack install and packaging setup.
@@ -302,6 +296,14 @@ if(TOP_LEVEL_PROJECT)
         set(CPACK_STRIP_FILES TRUE)
     endif()
 
+    if (NOT CPACK_STRIP_FILES) 
+        set(packageStrippedLabel "_withsymbols")
+    endif()
+
+    if (CONTAINERIZED) 
+        set(packageContainerizedLabel "_k8s")
+    endif()
+    
     if(UNIX AND NOT APPLE)
         execute_process(
             COMMAND ${HPCC_SOURCE_DIR}/cmake_modules/distrocheck.sh
@@ -323,11 +325,11 @@ if(TOP_LEVEL_PROJECT)
         message("-- distro uses ${packageManagement}, revision is ${packageRevisionArch}")
 
         if("${packageManagement}" STREQUAL "DEB")
-            set(CPACK_PACKAGE_FILE_NAME "${PACKAGE_FILE_NAME_PREFIX}_${CPACK_RPM_PACKAGE_VERSION}-${stagever}${packageRevisionArch}")
+            set(CPACK_PACKAGE_FILE_NAME "${PACKAGE_FILE_NAME_PREFIX}_${CPACK_RPM_PACKAGE_VERSION}-${stagever}${packageRevisionArch}${packageStrippedLabel}${packageContainerizedLabel}")
         elseif("${packageManagement}" STREQUAL "RPM")
-            set(CPACK_PACKAGE_FILE_NAME "${PACKAGE_FILE_NAME_PREFIX}_${CPACK_RPM_PACKAGE_VERSION}-${stagever}.${packageRevisionArch}")
+            set(CPACK_PACKAGE_FILE_NAME "${PACKAGE_FILE_NAME_PREFIX}_${CPACK_RPM_PACKAGE_VERSION}-${stagever}.${packageRevisionArch}${packageStrippedLabel}${packageContainerizedLabel}")
         else()
-            set(CPACK_PACKAGE_FILE_NAME "${PACKAGE_FILE_NAME_PREFIX}_${CPACK_RPM_PACKAGE_VERSION}_${stagever}${CPACK_SYSTEM_NAME}")
+            set(CPACK_PACKAGE_FILE_NAME "${PACKAGE_FILE_NAME_PREFIX}_${CPACK_RPM_PACKAGE_VERSION}_${stagever}${CPACK_SYSTEM_NAME}${packageStrippedLabel}${packageContainerizedLabel}")
         endif()
     endif ()
 
@@ -395,7 +397,7 @@ endif()
 #set( CPACK_DEB_PACKAGE_COMPONENT ON )
 
 if(TOP_LEVEL_PROJECT)
-    if(UNIX)
+    if (UNIX AND NOT APPLE)
         if("${packageManagement}" STREQUAL "DEB")
             set(CPACK_GENERATOR "${packageManagement}")
             message("-- Will build DEB package")
@@ -448,7 +450,7 @@ if(TOP_LEVEL_PROJECT)
         else()
             message("WARNING: Unsupported package ${packageManagement}.")
         endif ()
-    endif(UNIX)
+    endif(UNIX AND NOT APPLE)
 
     if(PLUGIN)
         if("${packageManagement}" STREQUAL "RPM")
@@ -467,17 +469,21 @@ if(TOP_LEVEL_PROJECT)
         endif()
     endif()
 
-    if(UNIX)
+    if(APPLE)
+        set(CPACK_PACKAGING_INSTALL_PREFIX "/opt/HPCCSystems/${version}/clienttools")
+    elseif(UNIX)
         set(CPACK_PACKAGING_INSTALL_PREFIX "${CMAKE_INSTALL_PREFIX}")
-    endif(UNIX)
+    endif(APPLE)
 
     if(PLATFORM OR PLUGIN)
         set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "${PACKAGE_FILE_NAME_PREFIX}")
     else()
+        if (APPLE)
+            set(CPACK_GENERATOR "productbuild")
+        endif ()
         if(APPLE OR WIN32)
-            set(CPACK_PACKAGE_FILE_NAME "${PACKAGE_FILE_NAME_PREFIX}_${version}-${stagever}${CPACK_SYSTEM_NAME}")
+            set(CPACK_PACKAGE_FILE_NAME "${PACKAGE_FILE_NAME_PREFIX}_${version}-${stagever}${CPACK_SYSTEM_NAME}${packageStrippedLabel}${packageContainerizedLabel}")
         endif()
-        set(CPACK_MONOLITHIC_INSTALL TRUE)
         file(WRITE "${PROJECT_BINARY_DIR}/welcome.txt"
             "HPCC Systems® - Client Tools\r"
             "===========================\r\r"
@@ -486,6 +492,7 @@ if(TOP_LEVEL_PROJECT)
         set(CPACK_RESOURCE_FILE_LICENSE "${HPCC_SOURCE_DIR}/${LICENSE_FILE}")
         set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "HPCC Systems® Client Tools.")
         if(WIN32)
+            set(CPACK_MONOLITHIC_INSTALL TRUE)
             if("${SIGN_DIRECTORY}" STREQUAL "")
                 set(SIGN_DIRECTORY "${HPCC_SOURCE_DIR}/../sign")
             endif()

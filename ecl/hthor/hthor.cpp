@@ -351,11 +351,14 @@ private:
     }
 };
 
-ClusterWriteHandler *createClusterWriteHandler(IAgentContext &agent, IHThorIndexWriteArg *iwHelper, IHThorDiskWriteArg *dwHelper, const char * lfn, StringAttr &fn, bool extend)
+ClusterWriteHandler *createClusterWriteHandler(IAgentContext &agent, IHThorIndexWriteArg *iwHelper, IHThorDiskWriteArg *dwHelper, const char * lfn, StringAttr &fn, bool extend, bool isIndex)
 {
     //In the containerized system, the default data plane for this component is in the configuration
     StringBuffer defaultCluster;
-    getDefaultStoragePlane(defaultCluster);
+    if (isIndex)
+        getDefaultIndexBuildStoragePlane(defaultCluster);
+    else
+        getDefaultStoragePlane(defaultCluster);
     Owned<CHThorClusterWriteHandler> clusterHandler;
     unsigned clusterIdx = 0;
     while(true)
@@ -536,7 +539,7 @@ void CHThorDiskWriteActivity::resolve()
                 throw MakeStringException(99, "Could not resolve DFS Logical file %s", lfn.str());
             }
 
-            clusterHandler.setown(createClusterWriteHandler(agent, NULL, &helper, dfsLogicalName.get(), filename, extend));
+            clusterHandler.setown(createClusterWriteHandler(agent, NULL, &helper, dfsLogicalName.get(), filename, extend, false));
         }
     }
     else
@@ -685,6 +688,7 @@ void CHThorDiskWriteActivity::publish()
                 mygrp.setown(agent.getHThorGroup(mygroupname));
         }
         ClusterPartDiskMapSpec partmap; // will get this from group at some point
+        partmap.defaultCopies = 1;
         desc->setNumParts(1);
         desc->setPartMask(base.str());
         desc->addCluster(mygroupname.str(),mygrp, partmap);
@@ -759,8 +763,6 @@ void CHThorDiskWriteActivity::publish()
     if (!logicalName.isExternal()) // no need to publish externals
     {
         Owned<IDistributedFile> file = queryDistributedFileDirectory().createNew(desc);
-        if(file->getModificationTime(modifiedTime))
-            file->setAccessedTime(modifiedTime);
         if ((helper.getFlags() & TDXtemporary) == 0)
         {
             StringBuffer clusterName;
@@ -1117,9 +1119,10 @@ CHThorIndexWriteActivity::CHThorIndexWriteActivity(IAgentContext &_agent, unsign
                 throw MakeStringException(99, "Cannot write %s, file already exists (missing OVERWRITE attribute?)", lfn.str());
         }
     }
-    clusterHandler.setown(createClusterWriteHandler(agent, &helper, NULL, lfn, filename, false));
+    clusterHandler.setown(createClusterWriteHandler(agent, &helper, NULL, lfn, filename, false, true));
     sizeLimit = agent.queryWorkUnit()->getDebugValueInt64("hthorDiskWriteSizeLimit", defaultHThorDiskWriteSizeLimit);
     defaultNoSeek = agent.queryWorkUnit()->getDebugValueBool("noSeekBuildIndex", isContainerized());
+    agent.queryWorkUnit()->getDebugValue("defaultIndexCompression", StringBufferAdaptor(defaultIndexCompression));
 }
 
 CHThorIndexWriteActivity::~CHThorIndexWriteActivity()
@@ -1152,6 +1155,14 @@ void CHThorIndexWriteActivity::execute()
     // Loop thru the results
     unsigned __int64 reccount = 0;
     unsigned int fileCrc = -1;
+    offset_t offsetBranches = 0;
+    offset_t uncompressedSize = 0;
+    unsigned __int64 numLeafNodes = 0;
+    unsigned __int64 numBlobNodes = 0;
+    unsigned __int64 numBranchNodes = 0;
+    offset_t originalBlobSize = 0;
+    unsigned nodeSize = 0;
+
     file.setown(createIFile(filename.get()));
     {
         OwnedIFileIO io;
@@ -1176,9 +1187,9 @@ void CHThorIndexWriteActivity::execute()
         if (isVariable)
             flags |= HTREE_VARSIZE;
         Owned<IPropertyTree> metadata;
-        buildUserMetadata(metadata);
+        buildUserMetadata(metadata, helper);
         buildLayoutMetadata(metadata);
-        unsigned nodeSize = metadata->getPropInt("_nodeSize", NODESIZE);
+        nodeSize = metadata->getPropInt("_nodeSize", NODESIZE);
         if (metadata->getPropBool("_noSeek", defaultNoSeek))
         {
             flags |= TRAILING_HEADER_ONLY;
@@ -1195,17 +1206,21 @@ void CHThorIndexWriteActivity::execute()
         if (!needsSeek)
             out.setown(createNoSeekIOStream(out));
 
-        Owned<IKeyBuilder> builder = createKeyBuilder(out, flags, keyMaxSize, nodeSize, helper.getKeyedSize(), 0, &helper, true, false);
+        Owned<IKeyBuilder> builder = createKeyBuilder(out, flags, keyMaxSize, nodeSize, helper.getKeyedSize(), 0, &helper, defaultIndexCompression, true, false);
         class BcWrapper : implements IBlobCreator
         {
             IKeyBuilder *builder;
+            offset_t totalSize = 0;
         public:
             BcWrapper(IKeyBuilder *_builder) : builder(_builder) {}
             virtual unsigned __int64 createBlob(size32_t size, const void * ptr)
             {
+                totalSize += size;
                 return builder->createBlob(size, (const char *) ptr);
             }
+            offset_t queryTotalSize() const { return totalSize; }
         } bc(builder);
+        size32_t maxRecordSizeSeen = 0;
         for (;;)
         {
             OwnedConstRoxieRow nextrec(input->nextRow());
@@ -1221,6 +1236,9 @@ void CHThorIndexWriteActivity::execute()
                 RtlStaticRowBuilder rowBuilder(rowBuffer, maxDiskRecordSize);
                 size32_t thisSize = helper.transform(rowBuilder, nextrec, &bc, fpos);
                 builder->processKeyData(rowBuffer, fpos, thisSize);
+                uncompressedSize += (thisSize + sizeof(offset_t)); // Fileposition is always stored.....
+                if (thisSize > maxRecordSizeSeen)
+                    maxRecordSizeSeen = thisSize;
             }
             catch(IException * e)
             {
@@ -1235,10 +1253,19 @@ void CHThorIndexWriteActivity::execute()
             }
             reccount++;
         }
-        builder->finish(metadata, &fileCrc);
+        builder->finish(metadata, &fileCrc, maxRecordSizeSeen);
         duplicateKeyCount = builder->getDuplicateCount();
         cummulativeDuplicateKeyCount += duplicateKeyCount;
+        numLeafNodes = builder->getNumLeafNodes();
+        numBranchNodes = builder->getNumBranchNodes();
+        numBlobNodes = builder->getNumBlobNodes();
+        originalBlobSize = bc.queryTotalSize();
+
+        totalLeafNodes += numLeafNodes;
+        totalBranchNodes += numBranchNodes;
+        totalBlobNodes += numBlobNodes;
         numDiskWrites = io->getStatistic(StNumDiskWrites);
+        offsetBranches = builder->getOffsetBranches();
         out->flush();
         out.clear();
     }
@@ -1278,13 +1305,16 @@ void CHThorIndexWriteActivity::execute()
                 mygrp.setown(agent.getHThorGroup(mygroupname));
         }
         ClusterPartDiskMapSpec partmap; // will get this from group at some point
+        partmap.defaultCopies = 1;
         desc->setNumParts(1);
         desc->setPartMask(base.str());
         desc->addCluster(mygroupname.str(),mygrp, partmap);
         attrs.set(&desc->queryPart(0)->queryProperties());
     }
+    attrs->setPropInt64("@uncompressedSize", uncompressedSize + originalBlobSize);
     attrs->setPropInt64("@size", indexFileSize);
     attrs->setPropInt64("@recordCount", reccount);
+    attrs->setPropInt64("@offsetBranches", offsetBranches);
 
     CDateTime createTime, modifiedTime, accessedTime;
     file->getTime(&createTime, &modifiedTime, &accessedTime);
@@ -1303,6 +1333,7 @@ void CHThorIndexWriteActivity::execute()
     // properties of the logical file
     IPropertyTree & properties = desc->queryProperties();
     properties.setProp("@kind", "key");
+    properties.setPropInt64("@uncompressedSize", uncompressedSize + originalBlobSize);
     properties.setPropInt64("@size", indexFileSize);
     properties.setPropInt64("@recordCount", reccount);
     properties.setProp("@owner", agent.queryWorkUnit()->queryUser());
@@ -1310,6 +1341,17 @@ void CHThorIndexWriteActivity::execute()
     properties.setProp("@job", agent.queryWorkUnit()->queryJobName());
     properties.setPropInt64("@duplicateKeyCount",duplicateKeyCount);
     properties.setPropInt64("@numDiskWrites", numDiskWrites);
+    properties.setPropInt64("@numLeafNodes", numLeafNodes);
+    properties.setPropInt64("@numBranchNodes", numBranchNodes);
+    properties.setPropInt64("@numBlobNodes", numBlobNodes);
+    if (numBlobNodes)
+        properties.setPropInt64("@originalBlobSize", originalBlobSize);
+
+    size32_t keyedSize = helper.getKeyedSize();
+    if (keyedSize == (size32_t)-1)
+        keyedSize = helper.queryDiskRecordSize()->getFixedSize();
+    properties.setPropInt64("@keyedSize", keyedSize);
+    properties.setPropInt("@nodeSize", nodeSize);
 
     char const * rececl = helper.queryRecordECL();
     if(rececl && *rececl)
@@ -1385,32 +1427,6 @@ void CHThorIndexWriteActivity::execute()
             result->setResultStatus(ResultStatusCalculated);
             result->setResultLogicalName(lfn.str());
         }
-    }
-}
-
-void CHThorIndexWriteActivity::buildUserMetadata(Owned<IPropertyTree> & metadata)
-{
-    size32_t nameLen;
-    char * nameBuff;
-    size32_t valueLen;
-    char * valueBuff;
-    unsigned idx = 0;
-    while(helper.getIndexMeta(nameLen, nameBuff, valueLen, valueBuff, idx++))
-    {
-        StringBuffer name(nameLen, nameBuff);
-        StringBuffer value(valueLen, valueBuff);
-        if(*nameBuff == '_' && !checkReservedMetadataName(name))
-        {
-            OwnedRoxieString fname(helper.getFileName());
-            throw MakeStringException(0, "Invalid name %s in user metadata for index %s (names beginning with underscore are reserved)", name.str(), fname.get());
-        }
-        if(!validateXMLTag(name.str()))
-        {
-            OwnedRoxieString fname(helper.getFileName());
-            throw MakeStringException(0, "Invalid name %s in user metadata for index %s (not legal XML element name)", name.str(), fname.get());
-        }
-        if(!metadata) metadata.setown(createPTree("metadata"));
-        metadata->setProp(name.str(), value.str());
     }
 }
 
@@ -9467,7 +9483,6 @@ void CHThorCsvReadActivity::gatherInfo(IFileDescriptor * fd)
     ICsvParameters * csvInfo = helper.queryCsvParameters();
 
     headerLines = csvInfo->queryHeaderLen();
-    maxDiskSize = csvInfo->queryMaxSize();
     limit = helper.getRowLimit();
     if (helper.getFlags() & TDRlimitskips)
         limit = (unsigned __int64) -1;
@@ -9543,9 +9558,8 @@ bool CHThorCsvReadActivity::openNext()
         unsigned lines = headerLines;
         while (lines-- && !inputstream->eos())
         {
-            size32_t numAvailable;
-            const void * next = inputstream->peek(maxDiskSize, numAvailable);
-            inputstream->skip(csvSplitter.splitLine(numAvailable, (const byte *)next));
+            size32_t thisLineLength = csvSplitter.splitLine(inputstream, maxRowSize);
+            inputstream->skip(thisLineLength);
         }
         // only skip header in the first file - since spray doesn't duplicate the header.
         headerLines = 0;        

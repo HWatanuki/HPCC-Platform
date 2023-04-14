@@ -176,11 +176,15 @@ static void escapeSingleQuote(StringBuffer& src, StringBuffer& escaped)
     }
 }
 
-static void appendServerAddress(StringBuffer &s, IPropertyTree &env, IPropertyTree &server, const char *daliAddress)
+static void appendServerAddress(StringBuffer &s, IPropertyTree &env, IPropertyTree &server, const char *daliAddress, const char *farmerPort)
 {
+    //just in case, for backward compatability with old environment.xml files, allow server rather than farmer to specify port
     const char *port = server.queryProp("@port");
-    if (port && streq(port, "0")) //roxie on demand
+    if (!port)
+        port = farmerPort;
+    if (port && streq(port, "0")) //0 == roxie listening on queue rather than port
         return;
+
     const char *netAddress = server.queryProp("@netAddress");
     if (!netAddress && server.hasProp("@computer"))
     {
@@ -206,8 +210,9 @@ public:
     {
     }
 
-    WsEclSocketFactory(const char *_socklist, bool _retry, bool includeTarget, const char *_alias, unsigned _dnsInterval) : CSmartSocketFactory(_socklist, _retry, 60, _dnsInterval), includeTargetInURL(includeTarget), alias(_alias)
+    WsEclSocketFactory(const char *_socklist, bool _retry, bool includeTarget, const char *_alias, unsigned _dnsInterval, bool useTls) : CSmartSocketFactory(_socklist, _retry, 60, _dnsInterval), includeTargetInURL(includeTarget), alias(_alias)
     {
+        tlsService  = useTls;
     }
 };
 
@@ -222,7 +227,7 @@ void initContainerRoxieTargets(MapStringToMyClass<ISmartSocketFactory> &connMap)
         if (isEmptyString(target) || isEmptyString(service.queryProp("@name"))) //bad config?
             continue;
 
-        Owned<ISmartSocketFactory> sf = new WsEclSocketFactory(service, false, true, nullptr, (unsigned) -1);
+        Owned<ISmartSocketFactory> sf = new WsEclSocketFactory(service, false, true, nullptr, 0);
         connMap.setValue(target, sf.get());
     }
 }
@@ -254,6 +259,7 @@ void initBareMetalRoxieTargets(MapStringToMyClass<ISmartSocketFactory> &connMap,
         const char *vip = NULL;
         bool includeTargetInURL = true;
         unsigned dnsInterval = (unsigned) -1;
+        bool useTls = false;
         if (vips)
         {
             IPropertyTree *pc = vips->queryPropTree(xpath.clear().appendf("ProcessCluster[@name='%s']", process.str()));
@@ -262,7 +268,7 @@ void initBareMetalRoxieTargets(MapStringToMyClass<ISmartSocketFactory> &connMap,
                 vip = pc->queryProp("@vip");
                 includeTargetInURL = pc->getPropBool("@includeTargetInURL", true);
                 dnsInterval = (unsigned) pc->getPropInt("@dnsInterval", -1);
-
+                useTls = pc->getPropBool("@tls", false);
             }
         }
         StringBuffer list;
@@ -274,19 +280,34 @@ void initBareMetalRoxieTargets(MapStringToMyClass<ISmartSocketFactory> &connMap,
         }
         else
         {
-            VStringBuffer xpath("Software/RoxieCluster[@name='%s']", process.str());
-            Owned<IPropertyTreeIterator> it = pRoot->getElements(xpath.str());
-            ForEach(*it)
+            const char *farmerPort = nullptr;
+            VStringBuffer xpath("Software/RoxieCluster[@name='%s'][1]", process.str());
+            IPropertyTree *roxieCluster = pRoot->queryPropTree(xpath.str());
+            if (roxieCluster)
             {
-                Owned<IPropertyTreeIterator> servers = it->query().getElements("RoxieServerProcess");
+                //port and TLS config come from farmer, node addresses come from server
+                Owned<IPropertyTreeIterator> farmers = roxieCluster->getElements("RoxieFarmProcess");
+                ForEach(*farmers)
+                {
+                    IPropertyTree &farmer = farmers->query();
+                    const char *port = farmer.queryProp("@port");
+                    if (!port || streq(port, "0"))
+                        continue;
+                    farmerPort = port;
+                    const char *protocol = farmer.queryProp("@protocol");
+                    if (protocol && streq(protocol, "ssl"))
+                        useTls = true;
+                    break; //use the first one without port==0
+                }
+                Owned<IPropertyTreeIterator> servers = roxieCluster->getElements("RoxieServerProcess");
                 ForEach(*servers)
-                    appendServerAddress(list, *pRoot, servers->query(), daliAddress);
+                    appendServerAddress(list, *pRoot, servers->query(), daliAddress, farmerPort);
             }
         }
         if (list.length())
         {
             StringAttr alias(clusterInfo->getAlias());
-            Owned<ISmartSocketFactory> sf = new WsEclSocketFactory(list.str(), !loadBalanced, includeTargetInURL, loadBalanced ? alias.str() : NULL, dnsInterval);
+            Owned<ISmartSocketFactory> sf = new WsEclSocketFactory(list.str(), !loadBalanced, includeTargetInURL, loadBalanced ? alias.str() : NULL, dnsInterval, useTls);
             connMap.setValue(target.str(), sf.get());
             if (alias.length() && !connMap.getValue(alias.str())) //only need one vip per alias for routing purposes
                 connMap.setValue(alias.str(), sf.get());
@@ -812,7 +833,7 @@ static void buildRestURL(StringArray& parentTypes, StringArray &path, IXmlType* 
         const char* itemName = type->queryFieldName(0);
         IXmlType*   itemType = type->queryFieldType(0);
         if (!itemName || !itemType)
-            throw MakeStringException(-1,"*** Invalid array definition: tag=%s, itemName=%s", tag, itemName?itemName:"NULL");
+            throw makeStringExceptionV(-1, "*** Invalid array definition: tag=%s, itemName=%s", tag?tag:"NULL", itemName?itemName:"NULL");
 
         StringBuffer itemURLPath(itemName);
         if (depth>1)
@@ -885,7 +906,7 @@ void buildSampleJsonDataset(StringBuffer &json, IPropertyTree *xsdtree, const ch
         {
             StringArray parentTypes;
             delimitJSON(json, true);
-            JsonHelpers::buildJsonMsg(parentTypes, type, json, resultname, NULL, REQSF_SAMPLE_DATA);
+            JsonHelpers::buildJsonMsg(parentTypes, type, json, StringBuffer(resultname).toLowerCase().replace(' ', '_'), NULL, REQSF_SAMPLE_DATA);
         }
     }
 

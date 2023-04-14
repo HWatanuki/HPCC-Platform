@@ -710,12 +710,13 @@ void CJobManager::run()
             break;
         }
         StringAttr graphName, wuid;
-        const char *wuidGraph = item->queryWUID(); // actually <wuid>/<graphName>
+        const char *wuidGraph = item->queryWUID(); // actually <wfid>/<wuid>/<graphName>
         StringArray sArray;
         sArray.appendList(wuidGraph, "/");
-        assertex(2 == sArray.ordinality());
-        wuid.set(sArray.item(0));
-        graphName.set(sArray.item(1));
+        assertex(3 == sArray.ordinality());
+        unsigned wfid = atoi(sArray.item(0));
+        wuid.set(sArray.item(1));
+        graphName.set(sArray.item(2));
 
         handlingConversation = true;
         SocketEndpoint agentep;
@@ -747,6 +748,11 @@ void CJobManager::run()
         {
             factory.setown(getWorkUnitFactory());
             workunit.setown(factory->openWorkUnit(wuid));
+
+            {
+                Owned<IWorkUnit> w = &workunit->lock();
+                addTimeStamp(w, wfid, graphName, StWhenDequeued);
+            }
 
             unsigned maxLogDetail = workunit->getDebugValueInt("maxlogdetail", DefaultDetail); 
             ILogMsgFilter *existingLogHandler = queryLogMsgManager()->queryMonitorFilter(logHandler);
@@ -850,7 +856,19 @@ void CJobManager::reply(IConstWorkUnit *workunit, const char *wuid, IException *
     if (e)
     {
         if (!exitException)
+        {
             exitException.setown(e);
+            Owned<IWorkUnit> w = &workunit->lock();
+            Owned<IWUException> we = w->createException();
+            we->setSeverity(SeverityInformation);
+            StringBuffer errStr;
+            e->errorMessage(errStr);
+            we->setExceptionMessage(errStr);
+            we->setExceptionSource("thormasterexception");
+            we->setExceptionCode(e->errorCode());
+
+            w->setState(WUStateWait);
+        }
         return;
     }
 #else
@@ -1079,9 +1097,17 @@ bool CJobManager::executeGraph(IConstWorkUnit &workunit, const char *graphName, 
         updateWorkunitStat(wu, SSTgraph, graphName, StTimeElapsed, graphTimeStr, graphTimeNs, wfid);
 
         addTimeStamp(wu, SSTgraph, graphName, StWhenFinished, wfid);
-        cost_type cost = money2cost_type(calculateThorCost(nanoToMilli(graphTimeNs), queryNodeClusterWidth()));
+        unsigned numberOfMachines = queryNodeClusterWidth() / globals->getPropInt("@numWorkersPerPod", 1); // Number of Pods or physical machines
+        cost_type cost = money2cost_type(calculateThorCost(nanoToMilli(graphTimeNs), numberOfMachines));
         if (cost)
             wu->setStatistic(queryStatisticsComponentType(), queryStatisticsComponentName(), SSTgraph, graphScope, StCostExecute, NULL, cost, 1, 0, StatsMergeReplace);
+        offset_t totalSpillSize = job->getTotalSpillSize();
+        if (totalSpillSize)
+        {
+            wu->setStatistic(queryStatisticsComponentType(), queryStatisticsComponentName(), SSTgraph, graphScope, StSizeSpillFile, NULL, totalSpillSize, 1, 0, StatsMergeAppend);
+            offset_t peakSpillSize = job->getPeakSpillSize();
+            wu->setStatistic(queryStatisticsComponentType(), queryStatisticsComponentName(), SSTgraph, graphScope, StSizePeakSpillFile, NULL, peakSpillSize, 1, 0, StatsMergeAppend);
+        }
 
         removeJob(*job);
     }
@@ -1245,11 +1271,11 @@ static int recvNextGraph(unsigned timeoutMs, const char *wuid, StringBuffer &ret
     // validate
     StringArray sArray;
     sArray.appendList(next, "/");
-    if (2 == sArray.ordinality())
+    if (3 == sArray.ordinality())
     {
         if (!thorQueue)
         {
-            if (wuid && !streq(sArray.item(0), wuid))
+            if (wuid && !streq(sArray.item(1), wuid))
                 return 0; // mismatch/ignore
             msg.clear().append(true);
             if (!queryWorldCommunicator().reply(msg, 60*1000)) // should be quick!
@@ -1257,9 +1283,12 @@ static int recvNextGraph(unsigned timeoutMs, const char *wuid, StringBuffer &ret
         }
     }
     else
+    {
+        WARNLOG("Unrecognised job format received: %s", next.str());
         return 0; // unrecognised format, ignore
-    retWuid.set(sArray.item(0));
-    retGraphName.set(sArray.item(1));
+    }
+    retWuid.set(sArray.item(1));
+    retGraphName.set(sArray.item(2));
     return 1; // success
 }
 
@@ -1331,15 +1360,18 @@ void thorMain(ILogMsgHandler *logHandler, const char *wuid, const char *graphNam
                         Owned<IWorkUnit> w = &workunit->lock();
                         if (e)
                         {
-                            Owned<IWUException> we = w->createException();
-                            we->setSeverity(SeverityInformation);
-                            StringBuffer errStr;
-                            e->errorMessage(errStr);
-                            we->setExceptionMessage(errStr);
-                            we->setExceptionSource("thormasterexception");
-                            we->setExceptionCode(e->errorCode());
+                            if (WUStateWait != w->getState()) // if set already, can only mean exception has been set already (see CJobManager::reply)
+                            {
+                                Owned<IWUException> we = w->createException();
+                                we->setSeverity(SeverityInformation);
+                                StringBuffer errStr;
+                                e->errorMessage(errStr);
+                                we->setExceptionMessage(errStr);
+                                we->setExceptionSource("thormasterexception");
+                                we->setExceptionCode(e->errorCode());
 
-                            w->setState(WUStateWait);
+                                w->setState(WUStateWait);
+                            }
                             break;
                         }
 

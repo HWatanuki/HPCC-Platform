@@ -343,7 +343,7 @@ public:
         bool isStatus;
 
         Owned<IDebuggerContext> debuggerContext;
-        HttpHelper httpHelper(NULL);
+        HttpHelper httpHelper(nullptr, nullptr);
         try
         {
             client->querySocket()->getPeerAddress(peer);
@@ -575,7 +575,7 @@ EclAgent::EclAgent(IConstWorkUnit *wu, const char *_wuid, bool _checkVersion, bo
             abortmonitor->setGuillotineCost(money2cost_type(guillotineCost));
         }
     }
-
+    configurePreferredPlanes();
 }
 
 EclAgent::~EclAgent()
@@ -1572,7 +1572,12 @@ char *EclAgent::getEnv(const char *name, const char *defaultValue) const
 {
     const char *val = cmdLineArgs->queryProp(name);
     if (!val)
+    {
+        char *hpccEnvVal = getHPCCEnvVal(name, defaultValue);
+        if (hpccEnvVal)
+            return hpccEnvVal;
         val = getenv(name);
+    }
     if (val)
         return strdup(val);
     else if (defaultValue)
@@ -1980,6 +1985,8 @@ void EclAgent::doProcess()
         const cost_type diskAccessCost = aggregateDiskAccessCost(w, nullptr);
         if (diskAccessCost)
             w->setStatistic(queryStatisticsComponentType(), queryStatisticsComponentName(), SSTglobal, "", StCostFileAccess, NULL, diskAccessCost, 1, 0, StatsMergeReplace);
+        updateSpillSize(w, nullptr, SSTglobal);
+
         addTimings(w);
 
         switch (w->getState())
@@ -2528,6 +2535,7 @@ void EclAgentWorkflowMachine::noteTiming(unsigned wfid, timestamp_type startTime
     const cost_type diskAccessCost = aggregateDiskAccessCost(wu, scope);
     if (diskAccessCost)
         wu->setStatistic(queryStatisticsComponentType(), queryStatisticsComponentName(), SSTworkflow, scope, StCostFileAccess, NULL, diskAccessCost, 1, 0, StatsMergeReplace);
+    updateSpillSize(wu, scope, SSTworkflow);
 }
 
 void EclAgentWorkflowMachine::doExecutePersistItem(IRuntimeWorkflowItem & item)
@@ -3520,7 +3528,6 @@ hthor:
     name: hthor
     analyzeWorkunit: true
     defaultMemoryLimitMB: 300
-    thorConnectTimeout: 600
     traceLevel: 0
 )!!";
 
@@ -3802,6 +3809,12 @@ extern int HTHOR_API eclagent_main(int argc, const char *argv[], Owned<ILocalWor
                 factory->setTracingLevel(10);
 #endif
                 w = factory->openWorkUnit(wuid.str());
+
+                if (agentTopology->getPropBool("@k8sJob"))
+                {
+                    Owned<IWorkUnit> workunit = &w->lock();
+                    addTimeStamp(workunit, SSTglobal, "", StWhenK8sStarted, 0);
+                }
             }
             else
                 w = standAloneWorkUnit.getClear();

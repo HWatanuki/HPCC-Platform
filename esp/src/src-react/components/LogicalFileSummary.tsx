@@ -1,6 +1,8 @@
 import * as React from "react";
 import { CommandBar, ContextualMenuItemType, ICommandBarItemProps, ScrollablePane, ScrollbarVisibility, Sticky, StickyPositionType } from "@fluentui/react";
+import { format as d3Format } from "@hpcc-js/common";
 import { DFUService, WsDfu } from "@hpcc-js/comms";
+import { scopedLogger } from "@hpcc-js/util";
 import nlsHPCC from "src/nlsHPCC";
 import { formatCost } from "src/Session";
 import * as Utility from "src/Utility";
@@ -15,6 +17,8 @@ import { RenameFile } from "./forms/RenameFile";
 import { ReplicateFile } from "./forms/ReplicateFile";
 import { replaceUrl } from "../util/history";
 
+const logger = scopedLogger("src-react/components/LogicalFileSummary.tsx");
+
 import "react-reflex/styles.css";
 
 const dfuService = new DFUService({ baseUrl: "" });
@@ -24,6 +28,8 @@ interface LogicalFileSummaryProps {
     logicalFile: string;
     tab?: string;
 }
+
+const formatInt = d3Format(",");
 
 export const LogicalFileSummary: React.FunctionComponent<LogicalFileSummaryProps> = ({
     cluster,
@@ -46,12 +52,12 @@ export const LogicalFileSummary: React.FunctionComponent<LogicalFileSummaryProps
         title: nlsHPCC.Delete,
         message: nlsHPCC.YouAreAboutToDeleteThisFile,
         onSubmit: React.useCallback(() => {
-            dfuService.DFUArrayAction({ Type: WsDfu.DFUArrayActions.Delete, LogicalFiles: { Item: [file.Filename] } }).then(({ ActionResults }) => {
+            dfuService.DFUArrayAction({ Type: WsDfu.DFUArrayActions.Delete, LogicalFiles: { Item: [file.Name] } }).then(({ ActionResults }) => {
                 const actionInfo = ActionResults?.DFUActionInfo;
                 if (actionInfo && actionInfo.length && !actionInfo[0].Failed) {
                     replaceUrl("/files");
                 }
-            });
+            }).catch(err => logger.error(err));
         }, [file])
     });
 
@@ -166,12 +172,13 @@ export const LogicalFileSummary: React.FunctionComponent<LogicalFileSummaryProps
                 "isRestricted": { label: nlsHPCC.Restricted, type: "checkbox", value: restricted },
                 "ContentType": { label: nlsHPCC.ContentType, type: "string", value: file?.ContentType, readonly: true },
                 "KeyType": { label: nlsHPCC.KeyType, type: "string", value: file?.KeyType, readonly: true },
-                "Filesize": { label: nlsHPCC.FileSize, type: "string", value: file?.Filesize, readonly: true },
                 "Format": { label: nlsHPCC.Format, type: "string", value: file?.Format, readonly: true },
                 "IsCompressed": { label: nlsHPCC.IsCompressed, type: "checkbox", value: file?.IsCompressed, readonly: true },
-                "CompressedFileSizeString": { label: nlsHPCC.CompressedFileSize, type: "string", value: file?.CompressedFileSize ? file?.CompressedFileSize.toString() : "", readonly: true },
+                "CompressedFileSizeString": { label: nlsHPCC.CompressedFileSize, type: "string", value: file?.CompressedFileSize ? formatInt(file?.CompressedFileSize) : "", readonly: true },
+                "Filesize": { label: nlsHPCC.FileSize, type: "string", value: file?.Filesize, readonly: true },
                 "PercentCompressed": { label: nlsHPCC.PercentCompressed, type: "string", value: file?.PercentCompressed, readonly: true },
                 "Modified": { label: nlsHPCC.Modified, type: "string", value: file?.Modified, readonly: true },
+                "ExpirationDate": { label: nlsHPCC.ExpirationDate, type: "string", value: file?.ExpirationDate, readonly: true },
                 "ExpireDays": { label: nlsHPCC.ExpireDays, type: "string", value: file?.ExpireDays ? file?.ExpireDays.toString() : "", readonly: true },
                 "Directory": { label: nlsHPCC.Directory, type: "string", value: file?.Dir, readonly: true },
                 "PathMask": { label: nlsHPCC.PathMask, type: "string", value: file?.PathMask, readonly: true },
@@ -179,8 +186,8 @@ export const LogicalFileSummary: React.FunctionComponent<LogicalFileSummaryProps
                 "RecordCount": { label: nlsHPCC.RecordCount, type: "string", value: file?.RecordCount, readonly: true },
                 "IsReplicated": { label: nlsHPCC.IsReplicated, type: "checkbox", value: (file?.filePartsOnCluster() ?? []).length > 0, readonly: true },
                 "NumParts": { label: nlsHPCC.FileParts, type: "number", value: file?.NumParts, readonly: true },
-                "MinSkew": { label: nlsHPCC.MinSkew, type: "string", value: file?.Stat?.MinSkew, readonly: true },
-                "MaxSkew": { label: nlsHPCC.MaxSkew, type: "string", value: file?.Stat?.MaxSkew, readonly: true },
+                "MinSkew": { label: nlsHPCC.MinSkew, type: "string", value: `${Utility.formatDecimal(file?.Stat?.MinSkewInt64 / 100 ?? 0)}%`, readonly: true },
+                "MaxSkew": { label: nlsHPCC.MaxSkew, type: "string", value: `${Utility.formatDecimal(file?.Stat?.MaxSkewInt64 / 100 ?? 0)}%`, readonly: true },
                 "MinSkewPart": { label: nlsHPCC.MinSkewPart, type: "string", value: file?.Stat?.MinSkewPart === undefined ? "" : file?.Stat?.MinSkewPart?.toString(), readonly: true },
                 "MaxSkewPart": { label: nlsHPCC.MaxSkewPart, type: "string", value: file?.Stat?.MaxSkewPart === undefined ? "" : file?.Stat?.MaxSkewPart?.toString(), readonly: true },
             }} onChange={(id, value) => {

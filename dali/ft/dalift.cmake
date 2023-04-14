@@ -61,3 +61,4 @@ target_link_libraries ( dalift
 if (NOT CONTAINERIZED)
     target_link_libraries ( dalift environment )
 endif()
+

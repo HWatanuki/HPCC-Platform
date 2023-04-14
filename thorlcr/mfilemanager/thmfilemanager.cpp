@@ -542,7 +542,7 @@ public:
             desc->setDefaultDir(dir.str());
 
             if (job.getOptBool("subDirPerFilePart", dirPerPart) && total>1)
-                desc->queryProperties().setPropInt("@flags", static_cast<int>(FileDescriptorFlags::dirperpart));
+                desc->setFlags(FileDescriptorFlags::dirperpart);
 
             StringBuffer partmask;
             getPartMask(partmask,logicalName,total);
@@ -584,7 +584,6 @@ public:
             fileMap.replace(*new CIDistributeFileMapping(logicalName, *LINK(file))); // cache takes ownership
             return;
         }
-        file->setAccessed();
         offset_t fs = file->getDiskSize(false, false);
         if (publishedFile)
             publishedFile->set(file);

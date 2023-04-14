@@ -27,7 +27,7 @@
     size32_t trailsize; bytes traildata;    // unexpanded
 */
 
-class jlib_decl CLZ4Compressor : public CFcmpCompressor
+class CLZ4Compressor final : public CFcmpCompressor
 {
     bool hc;
 protected:
@@ -46,6 +46,21 @@ protected:
             else
                 inmax = inmax2;
         }
+    }
+
+    virtual bool adjustLimit(size32_t newLimit) override
+    {
+        assertex(bufalloc == 0 && !outBufMb);       // Only supported when a fixed size buffer is provided
+        assertex(inlenblk == COMMITTED);            // not inside a transaction
+        assertex(newLimit <= originalMax);
+
+        //Reject the limit change if it is too small for the data already committed.
+        if (newLimit < LZ4_COMPRESSBOUND(inlen) + outlen + sizeof(size32_t))
+            return false;
+
+        blksz = newLimit;
+        setinmax();
+        return true;
     }
 
     virtual void flushcommitted() override
@@ -98,6 +113,21 @@ protected:
         }
         trailing = true;
     }
+
+
+    size32_t buflen() override
+    {
+        if (inbuf)
+        {
+            //calling flushcommitted() would mean everything is serialized as trailing
+            size32_t toflush = (inlenblk==COMMITTED)?inlen:inlenblk;
+            return outlen+sizeof(size32_t)*2+LZ4_COMPRESSBOUND(toflush);
+        }
+        return outlen;
+    }
+
+
+    virtual CompressionMethod getCompressionMethod() const override { return hc ? COMPRESS_METHOD_LZ4HC : COMPRESS_METHOD_LZ4; }
 public:
     CLZ4Compressor(bool _hc) : hc(_hc)
     {        

@@ -53,15 +53,26 @@ global:
     ## To properly allow access to the kubectl API from pods that need it, the cidr of the kubectl endpoint needs to be supplied
     ## This may be obtained via "kubectl get endpoints --namespace default kubernetes"
     ## If these are not supplied, egress controls will allow access to any IPs/ports from any pod where API access is needed
-    # kubeApiCidr: 172.17.0.3/32  
+    # kubeApiCidr: 172.17.0.3/32
     # kubeApiPort: 7443
+
+    ## named egress sections defined here, can be referenced by components, or they can define their own egress section explicitly
+    #engineEgress:
+    #- to:
+    #  - ipBlock:
+    #      cidr: 10.9.8.7/32
+    #  ports:
+    #  - protocol: TCP
+    #    port: 443
+
 
   cost:
     currencyCode: USD
-    perCpu: 0.126
-    storageAtRest: 0.0135
-    storageReads: 0.0485
-    storageWrites: 0.0038
+    # The following are example pricing based on standard Azure pricing and should be updated to reflect actual rates
+    perCpu: 0.0565000000001        # D64ds_v4 compute node ($2,639.68/month for 64 vCPU)
+    storageAtRest: 0.0208000000001 # Blob storage pricing (East US/Flag NS/LRS redundancy/Hot)
+    storageReads: 0.00400000000001 # Blob storage pricing (East US/Flag NS/LRS redundancy/Hot)
+    storageWrites: 0.0500000000001 # Blob storage pricing (East US/Flag NS/LRS redundancy/Hot)
 
   # postJobCommand will execute at the end of a dynamically launched K8s job,
   # when the main entrypoint process finishes, or if the readiness probes trigger a preStop event.
@@ -168,6 +179,11 @@ storage:
   #   defaultSprayParts: 4                  # The number of partitions created when spraying (default: 1)
   #   cost:                                 # The storage cost
   #     storageAtRest: 0.0135               # Storage at rest cost: cost per GiB/month
+  #   storageapi:                           # Optional information to allow access to storage api
+  #     type: azurefile | azureblob
+  #     account: <account-name>             # azure storage account name
+  #     secret: <secret-for-sas-token>      # secret name (under secrets/storage) for accessing SAS token
+  #     containers: [ <container-list> ]    # a list of containers
 
   - name: dali
     storageClass: ""
@@ -208,7 +224,7 @@ storage:
 ## The Certificate issuers are divided into "local" (those which will be used for local mutual TLS) and "public" those
 ## which will be publicly accessible and therefore need to be recognized by browsers and/or other entities.
 ##
-## Both public and local issuers have a spec section. The contents of the "spec" are documented in the cer-manager
+## Both public and local issuers have a spec section. The contents of the "spec" are documented in the cert-manager
 ## "Issuer configuration" documentation. https://cert-manager.io/docs/configuration/#supported-issuer-types
 ##
 ## The default configuration is meant to provide reasonable functionality without additional dependencies.
@@ -329,6 +345,8 @@ secrets:
 vaults:
   storage:
 
+  git:
+
   authn:
 
   ecl:
@@ -336,6 +354,10 @@ vaults:
   eclUser:
     ## Category for vaults accessible via ecl code.  These are vaults that users can access directly.  Be cautious
     ## about what vaults you add to this category as they are easily accessed by ECL code.
+    #- name: ecl-user-vault
+    #  url: http://${env.VAULT_SERVICE_HOST}:${env.VAULT_SERVICE_PORT}/v1/secret/data/ecluser/${secret}
+    #  kind: kv-v2
+    #  namespace: mynamespace # for use with enterprise vaults segmented by namespaces
 
   esp:
 
@@ -347,6 +369,7 @@ vaults:
     # - name: codesign-private-keys
     #  url: http://${env.VAULT_SERVICE_HOST}:${env.VAULT_SERVICE_PORT}/v1/secret/data/codeSign/${secret}
     #  kind: kv-v2
+    #  namespace: mynamespace # for use with enterprise vaults segmented by namespaces
   ## The keys for verifying signed code may be imported from the vault.
   ## vault kv put secret/codeVerify/gpg-public-key-1 public=@<public_key_file1>
   ## vault kv put secret/codeVerify/gpg-public-key-2 public=@<public_key_file2>
@@ -354,6 +377,7 @@ vaults:
     # - name: codesign-public-keys
     #  url: http://${env.VAULT_SERVICE_HOST}:${env.VAULT_SERVICE_PORT}/v1/secret/data/codeVerify/${secret}
     #  kind: kv-v2
+    #  namespace: mynamespace # for use with enterprise vaults segmented by namespaces
 
 bundles: []
 ## Specifying bundles here will cause the indicated bundles to be downloaded and installed automatically
@@ -385,7 +409,7 @@ dafilesrv:
   application: spray
   service:
     servicePort: 7300
-    visibility: local
+    visibility: cluster
     
 
 dali:
@@ -401,8 +425,6 @@ dali:
       #resources:
       #  cpu: "1"
       #  memory: "1G"
-
-  #metaAccess: "shared" # enable if coalescer running in separate pod, and thus needs access to meta over PVC mount
 
   #resources:
   #  cpu: "1"
@@ -438,14 +460,14 @@ sasha:
     #duration: 0 # (maxDuration) maximum duration to run DFU WorkUnit archiving session (hours, 0 unlimited)
     #throttle: 0 # throttle ratio (0-99, 0 no throttling, 50 is half speed)
 
-  dfurecovery-archiver:
+  dfurecovery-archiver: {} # NB: no properties defined, use defaults
     #disabled: true
     #limit: 20 # threshold number of DFU recovery items before archiving starts (0 disables)
     #cutoff: 4 # minimum DFU recovery item age to archive (days)
     #interval: 12 # minimum interval between running DFU recovery archiver(in hours, 0 disables)
     #at: "* * * * *" # schedule to run DFU recovery archiver (cron format)
 
-  file-expiry:
+  file-expiry: {} # NB: no properties defined, use defaults
     #disabled: true
     #interval: 1
     #at: "* 3 * * *"
@@ -476,6 +498,7 @@ eclagent:
   #resources:
   #  cpu: "1"
   #  memory: "1G"
+  #egress: engineEgress
 
 - name: roxie-workunit
   replicas: 1
@@ -486,6 +509,7 @@ eclagent:
   #resources:
   #  cpu: "1"
   #  memory: "1G"
+  #egress: engineEgress
 
 eclccserver:
 - name: myeclccserver
@@ -519,11 +543,37 @@ esp:
   application: eclwatch
   auth: none
   replicas: 1
+  ## The following 'corsAllowed' section is used to configure CORS support
+  ##   origin - the origin to support CORS requests from
+  ##   headers - the headers to allow for the given origin via CORS
+  ##   methods - the HTTP methods to allow for the given origin via CORS
+  ##
+  #corsAllowed:
+  ## origin starting with https will only allow https CORS
+  #- origin: https://*.my.com
+  #  headers:
+  #  - "X-X"
+  #  methods:
+  #  - "GET"
+  #  - "OPTIONS"
+  ## origin starting with http will allow http or https CORS
+  #- origin: http://www.example.com
+  #  headers:
+  #  - "*"
+  #  methods:
+  #  - "GET"
+  #  - "POST"
+  #  - "OPTIONS"
+
 # Add remote clients to generated client certificates and make the ESP require that one of the generated certificates is provided by a client in order to connect
 #   When setting up remote clients make sure that certificates.issuers.remote.enabled is set to true.
 # remoteClients:
-# - name: myclient
-#   organization: mycompany
+# - name: petfoodApplicationProd
+#   organization: petfoodDept
+#   secretTemplate:
+#     annotations:
+#       kubed.appscode.com/sync: "hpccenv=petfoodAppProd" # use kubed config-syncer to replicate certificate to namespace with matching annotation (also supports syncing with separate aks clusters)
+
   service:
     ## port can be used to change the local port used by the pod. If omitted, the default port (8880) is used
     port: 8888
@@ -607,8 +657,6 @@ esp:
   application: sql2ecl
   auth: none
   replicas: 1
-# remoteClients:
-# - name: sqlclient111
   service:
     visibility: local
     servicePort: 8510
@@ -699,6 +747,7 @@ roxie:
     replicas: 1
   #directAccessPlanes: []  #add direct access planes that roxie will read from without copying the data to its default data plane
   #ldapUser: roxie_file_access    #add system username for accessing files
+  #egress: engineEgress
 
 ## The [manager/worker/eclAgent]Resources define the resource limits for each pod.
 ## workerMemory defines the memory requirements for each individual worker.
@@ -713,6 +762,7 @@ thor:
   numWorkers: 2
   maxJobs: 4
   maxGraphs: 2
+  #maxGraphStartupTime: 600
   #numWorkersPerPod: 1
   #managerResources:
   #  cpu: "1"
@@ -726,6 +776,7 @@ thor:
   #eclAgentResources:
   #  cpu: "1"
   #  memory: "2G"
+  #egress: engineEgress
 
 eclscheduler:
 - name: eclscheduler

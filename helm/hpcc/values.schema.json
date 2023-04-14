@@ -34,6 +34,10 @@
         },
         "remote": {
           "$ref": "#/definitions/remoteStorage"
+        },
+        "indexBuildPlane": {
+          "type": "string",
+          "description": "Default plane for index builds"
         }
       },
       "additionalProperties": false
@@ -122,6 +126,9 @@
           "$ref": "#/definitions/vaultCategory"
         },
         "codeVerify": {
+          "$ref": "#/definitions/vaultCategory"
+        },
+        "git": {
           "$ref": "#/definitions/vaultCategory"
         }
       },
@@ -220,6 +227,13 @@
           "labels": {
             "type": "object",
             "additionalProperties": { "type": "string" }
+          },
+          "egress": {
+              "$ref" : "#/definitions/egress"
+          },
+          "expert": {
+            "description": "Custom internal options usually reserved for internal testing",
+            "type": "object"
           }
         },
         "additionalProperties": { "type": ["integer", "string", "boolean"] },
@@ -247,9 +261,6 @@
       "items": { "$ref": "#/definitions/dafilesrv" }
     }
   },
-  "required": [
-    "dali"
-  ],
   "title": "Values",
   "type": "object",
   "definitions": {
@@ -281,7 +292,7 @@
           "$ref": "#/definitions/logAccess"
         },
         "egress": {
-          "$ref": "#/definitions/egress"
+          "$ref": "#/definitions/globalEgress"
         },
         "defaultEsp": {
           "type": "string"
@@ -323,6 +334,9 @@
                 "type": "number"
             }
           }
+        },
+        "expert": {
+          "description": "Settings for developers, debugging and testing"
         },
         "misc": {
           "description": "Miscellaneous settings",
@@ -524,6 +538,7 @@
             "forcePermissions": {
               "type": "boolean"
             },
+            "components": {},
             "prefix": {},
             "subPath": {},
             "secret": {},
@@ -532,7 +547,8 @@
             "hosts": {},
             "umask": {},
             "numMounts": {},
-            "cost": {}
+            "cost": {},
+            "storageapi": {}
           },
           "additionalProperties": false
         }
@@ -584,6 +600,56 @@
               "type": "number"
             }
           }
+        },
+        "storageapi": {
+          "description": "Optional information for storage api",
+          "type": "object",
+          "properties": {
+            "type": {
+              "description": "Type of storage api",
+              "type": "string",
+              "enum": ["azurefile", "azureblob"]
+            },
+            "account": {
+              "description": "Account name",
+              "type": "string"
+            },
+            "secret": {
+              "description": "Secret id",
+              "type": "string"
+            },
+      	    "containers": {
+              "type": "array",
+              "description": "List of containers",
+              "items": {
+                "description": "storage container/file share (one item for each device)",
+                "type": "object",
+                "properties": {
+                  "name": {
+                    "description": "Name of storage container/file share",
+                    "type" : "string"
+                  },
+                  "account" : {
+                    "description" : "Acccount Name (optional - will default to parent object if not specified)",
+                    "type" : "string"
+                  },
+                  "secret" : {
+                    "description" : "Secret id (optional - will default to parent object if not specified)",
+                    "type" : "string"
+                  }
+                },
+                "additionalProperties": false,
+                "required": [ "name" ]
+              }
+            }
+          },
+          "additionalProperties": false,
+          "required": [ "type", "containers" ]
+        },
+        "components": {
+          "description": "If specified, only mount the storage plane in the specified components",
+          "type": "array",
+          "items": { "type": "string" }
         }
       }
     },
@@ -613,6 +679,7 @@
             "hosts": {},
             "umask": {},
             "numMounts": {},
+            "components": {},
             "cost": {}
           },
           "additionalProperties": false,
@@ -751,6 +818,22 @@
         "client-secret": {
           "description": "optional name of kubernetes secret that will provide the vault client token",
           "type": "string"
+        },
+        "appRoleId": {
+          "description": "app role id assigned for use with Hashicorp appRole authentication",
+          "type": "string"
+        },
+        "appRoleSecret": {
+          "description": "name of the secret that will contain the 'secret-id' used with Hashicorp appRole authentication",
+          "type": "string"
+        },
+        "namespace": {
+          "description": "the namespace to use when authenticating with, and accessing the vault",
+          "type": "string"
+        },
+        "verify_server": {
+          "description": "optional relax server verification for trouble shooting",
+          "type": "boolean"
         }
       },
       "required": [ "name", "url" ],
@@ -838,6 +921,10 @@
         "description": {
           "type": "string",
           "description": "Description of this Active Directory Server component"
+        },
+        "ldapCipherSuite": {
+          "type": "string",
+          "description": "The optional Cipher Suite to be applied to LDAPS connections"
         },
         "adminGroupName": {
           "type": "string",
@@ -941,6 +1028,11 @@
           "type": "integer",
           "description": "Number of log entries to drop from the log queue when it is full. Disabled if 0, or if queueLength is 0",
           "default": 0
+        },
+        "dataFormat": {
+          "type": "string",
+          "description": "The data format used to report logging: xml|json|table(space delimited values)",
+          "enum": [ "xml", "json", "table"]
         }
       },
       "additionalProperties": { "type": ["integer", "string", "boolean"] }
@@ -990,6 +1082,23 @@
       }
     },
     "egress": {
+      "oneOf": [
+        {
+          "type": "string",
+          "description": "Named egress section (from global.egress) to apply to this component"
+        },
+        {
+          "type": "array",
+          "items": {
+            "additionalProperties": {
+              "type": "array",
+              "items": { "type": "object" }
+            }
+          }
+        }  
+      ]
+    },
+    "globalEgress": {
       "type": "object",
       "properties": {
         "restricted": {
@@ -1009,7 +1118,16 @@
           "description": "Label that has been applied to the kube-system namespace, used to restrict DNS service calls on port 53 to pods in the kube-system namespace"
         }
       },
-      "additionalProperties": false
+      "additionalProperties": {
+        "type": "array",
+        "properties":
+        {
+          "egress": {
+            "$ref" : "#/definitions/egress"
+          },              
+          "additionalProperties": false
+        }
+      }
     },
     "service": {
       "description": "Service properties",
@@ -1099,6 +1217,9 @@
         },
         "service": {
           "$ref": "#/definitions/service"
+        },
+        "egress": {
+          "$ref" : "#/definitions/egress"
         }
       }
     },
@@ -1175,6 +1296,9 @@
         },
         "cost": {
           "$ref" : "#/definitions/componentCost"
+        },
+        "egress": {
+          "$ref" : "#/definitions/egress"
         }
       }
     },
@@ -1266,6 +1390,12 @@
         },
         "remoteClients": {
           "$ref": "#/definitions/remoteClients"
+        },
+        "corsAllowed": {
+          "$ref": "#/definitions/corsAllowed"
+        },
+        "egress": {
+          "$ref" : "#/definitions/egress"
         }
       }
     },
@@ -1305,6 +1435,10 @@
           "description": "The default storage plane to write data files to",
           "type": "string"
         },
+        "indexBuildPlane": {
+          "description": "The default storage plane to write index files to",
+          "type": "string"
+        },
         "annotations": {
           "type": "object",
           "additionalProperties": { "type": "string" }
@@ -1321,6 +1455,12 @@
         },
         "cost": {
           "$ref" : "#/definitions/componentCost"
+        },
+        "egress": {
+          "$ref" : "#/definitions/egress"
+        },
+        "preferredDataReadPlanes": {
+          "$ref" : "#/definitions/preferredDataReadPlanes"
         }
       }
     },
@@ -1376,6 +1516,10 @@
         },
         "spillPlane": {
           "description": "The storage plane to write spill files to",
+          "type": "string"
+        },
+        "indexBuildPlane": {
+          "description": "The default storage plane to write index files to",
           "type": "string"
         },
         "resources": {
@@ -1529,6 +1673,11 @@
           "type": "boolean",
           "default": false,
           "description": "Ignore mismatched file dates on local files"
+        },
+        "ignoreFileSizeMismatches": {
+          "type": "boolean",
+          "default": false,
+          "description": "Ignore mismatched file sizes on local files"
         },
         "fileTimeFuzzySeconds": { 
           "type": "integer",
@@ -1982,6 +2131,16 @@
           "default": 5000,
           "minimum": 0,
           "description": "Interval (in milliseconds) between checks that client socket is still open"
+        },
+        "expert": {
+          "description": "Custom internal options usually reserved for internal testing",
+          "type": "object"
+        },
+        "egress": {
+          "$ref" : "#/definitions/egress"
+        },
+        "preferredDataReadPlanes": {
+          "$ref" : "#/definitions/preferredDataReadPlanes"
         }
       }
     },
@@ -2083,7 +2242,7 @@
         },
         "numWorkers": {
           "type": "integer",
-          "description": "The number of worker pods",
+          "description": "The number of worker containers. NB: There will be <numWorker>/<numWorkersPerPod> pods",
           "minimum": 1
         },
         "numWorkersPerPod": {
@@ -2133,6 +2292,11 @@
           "type": "boolean",
           "description": "[Optional] If lingerPeriod set, allows Thor to process more graphs from any job"
         },
+        "maxGraphStartupTime": {
+          "type": "integer",
+          "description": "[Optional] The time (seconds) for the job to wait for a Thor instance to start",
+          "default": 600
+        },
         "image": {
           "$ref": "#/definitions/image"
         },
@@ -2148,6 +2312,10 @@
         },
         "spillPlane": {
           "description": "The storage plane to write spill files to",
+          "type": "string"
+        },
+        "indexBuildPlane": {
+          "description": "The default storage plane to write index files to",
           "type": "string"
         },
         "annotations": {
@@ -2182,6 +2350,12 @@
         "expert": {
           "description": "Custom internal options usually reserved for internal testing",
           "type": "object"
+        },
+        "egress": {
+          "$ref" : "#/definitions/egress"
+        },
+        "preferredDataReadPlanes": {
+          "$ref" : "#/definitions/preferredDataReadPlanes"
         }
       }
     },
@@ -2247,6 +2421,9 @@
         },
         "resources": {
           "$ref": "#/definitions/resources"
+        },
+        "egress": {
+          "$ref" : "#/definitions/egress"
         }
       }
     },
@@ -2266,177 +2443,14 @@
       }
     },
     "sasha-coalescer": {
-      "oneOf": [
+      "type": "object",
+      "allOf": [
+        { "$ref": "#/definitions/sashacommon" },
         {
-          "type": "object",
-          "allOf": [
-            { "$ref": "#/definitions/sashacommon" },
-            {
-              "properties": {
-                "minDeltaSize": {
-                  "type": "integer",
-                  "description": "Coalescing will only begin, if the delta size is above this threshold (K)"
-                },
-                "disabled": {},
-                "interval": {},
-                "service": {},
-                "at" : {},
-                "throttle": {},
-                "image": {},
-                "plane": {},
-                "resources": {},
-                "env": {},
-                "annotations": {},
-                "labels": {}
-              },
-              "additionalProperties": false
-            }
-          ]
-        },
-        {
-          "type": "null"
-        }
-      ]
-    },
-    "sasha-wu-archiver": {
-      "oneOf": [
-        {
-          "type": "object",
-          "required": [ "plane" ],
-          "allOf": [
-            { "$ref": "#/definitions/sashacommon" },
-            { "$ref": "#/definitions/sasha-limitcutoff" },
-            {
-              "properties": 
-              {
-                "backup": {
-                  "type": "integer",
-                  "description": "minimum workunit age to backup (days, 0 disables)",
-                  "default": "0"
-                },
-                "duration": {
-                  "type": "integer",
-                  "description": "Maximum duration to run WorkUnit archiving session (hours, 0 unlimited)",
-                  "default": "0"
-                },
-                "keepResultFiles": {
-                  "type": "boolean",
-                  "description": "option to keep result files owned by workunits after workunit is archived",
-                  "default": "false"
-                },
-                "retryinterval": {
-                  "type": "integer",
-                  "description": "minimal time before retrying archive of failed WorkUnits (days)",
-                  "default": "7"
-                },
-                "disabled": {},
-                "interval": {},
-                "service": {},
-                "at" : {},
-                "throttle": {},
-                "image": {},
-                "plane": {},
-                "resources": {},
-                "env": {},
-                "annotations": {},
-                "labels": {},
-                "limit": {},
-                "cutoff": {}    
-              },
-              "additionalProperties": false
-            }
-          ]
-        },
-        {
-          "type": "null"
-        }
-      ]
-    },
-    "sasha-dfuwu-archiver": {
-      "oneOf": [
-        {
-          "type": "object",
-          "required": [ "plane" ],
-          "allOf": [ 
-            { "$ref": "#/definitions/sashacommon" },
-            { "$ref": "#/definitions/sasha-limitcutoff" },
-            {
-              "properties": 
-              {
-                "disabled": {},
-                "interval": {},
-                "service": {},
-                "at" : {},
-                "throttle": {},
-                "image": {},
-                "plane": {},
-                "resources": {},
-                "env": {},
-                "annotations": {},
-                "labels": {},
-                "limit": {},
-                "cutoff": {}
-              },
-              "additionalProperties": false
-            }
-          ]
-        },
-        {
-          "type": "null"
-        }
-      ]
-    },
-    "sasha-dfurecovery-archiver": {
-      "oneOf": [
-        {
-          "type": "object",
-          "allOf": [
-            { "$ref": "#/definitions/sashacommon" },
-            { "$ref": "#/definitions/sasha-limitcutoff" },
-            {
-              "properties": {
-                "disabled": {},
-                "interval": {},
-                "service": {},
-                "at" : {},
-                "throttle": {},
-                "image": {},
-                "plane": {},
-                "resources": {},
-                "env": {},
-                "annotations": {},
-                "labels": {},
-                "limit": {},
-                "cutoff": {}    
-              },
-              "additionalProperties": false
-            }
-          ]
-        },
-        {
-          "type": "null"
-        }
-      ]
-    },
-    "sasha-file-expiry": {
-      "oneOf": [
-        {
-          "type": "object",
-          "allOf": [{ "$ref": "#/definitions/sashacommon" }],
           "properties": {
-            "persistExpiryDefault": {
+            "minDeltaSize": {
               "type": "integer",
-              "description": "Default number of days to delete unused persist files",
-              "default": "7"
-            },
-            "expiryDefault": {
-              "type": "integer",
-              "description": "Default number of days to delete unused standard files that are flagged with EXPIRY",
-              "default": "14"
-            },
-            "user": {
-              "type": "string",
-              "description": "A username authorized to access and remove expired files"
+              "description": "Coalescing will only begin, if the delta size is above this threshold (K)"
             },
             "disabled": {},
             "interval": {},
@@ -2446,15 +2460,148 @@
             "image": {},
             "plane": {},
             "resources": {},
+            "env": {},
             "annotations": {},
-            "labels": {}
+            "labels": {},
+            "egress": {}
           },
           "additionalProperties": false
-        },
-        {
-          "type": "null"
         }
       ]
+    },
+    "sasha-wu-archiver": {
+      "type": "object",
+      "required": [ "plane" ],
+      "allOf": [
+        { "$ref": "#/definitions/sashacommon" },
+        { "$ref": "#/definitions/sasha-limitcutoff" },
+        {
+          "properties": 
+          {
+            "backup": {
+              "type": "integer",
+              "description": "minimum workunit age to backup (days, 0 disables)",
+              "default": "0"
+            },
+            "duration": {
+              "type": "integer",
+              "description": "Maximum duration to run WorkUnit archiving session (hours, 0 unlimited)",
+              "default": "0"
+            },
+            "keepResultFiles": {
+              "type": "boolean",
+              "description": "option to keep result files owned by workunits after workunit is archived",
+              "default": "false"
+            },
+            "retryinterval": {
+              "type": "integer",
+              "description": "minimal time before retrying archive of failed WorkUnits (days)",
+              "default": "7"
+            },
+            "disabled": {},
+            "interval": {},
+            "service": {},
+            "at" : {},
+            "throttle": {},
+            "image": {},
+            "plane": {},
+            "resources": {},
+            "env": {},
+            "annotations": {},
+            "labels": {},
+            "limit": {},
+            "cutoff": {},
+            "egress": {}    
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "sasha-dfuwu-archiver": {
+      "type": "object",
+      "required": [ "plane" ],
+      "allOf": [ 
+        { "$ref": "#/definitions/sashacommon" },
+        { "$ref": "#/definitions/sasha-limitcutoff" },
+        {
+          "properties": 
+          {
+            "disabled": {},
+            "interval": {},
+            "service": {},
+            "at" : {},
+            "throttle": {},
+            "image": {},
+            "plane": {},
+            "resources": {},
+            "env": {},
+            "annotations": {},
+            "labels": {},
+            "limit": {},
+            "cutoff": {},
+            "egress": {}
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "sasha-dfurecovery-archiver": {
+      "type": "object",
+      "allOf": [
+        { "$ref": "#/definitions/sashacommon" },
+        { "$ref": "#/definitions/sasha-limitcutoff" },
+        {
+          "properties": {
+            "disabled": {},
+            "interval": {},
+            "service": {},
+            "at" : {},
+            "throttle": {},
+            "image": {},
+            "plane": {},
+            "resources": {},
+            "env": {},
+            "annotations": {},
+            "labels": {},
+            "limit": {},
+            "cutoff": {},
+            "egress": {}
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "sasha-file-expiry": {
+      "type": "object",
+      "allOf": [{ "$ref": "#/definitions/sashacommon" }],
+      "properties": {
+        "persistExpiryDefault": {
+          "type": "integer",
+          "description": "Default number of days to delete unused persist files",
+          "default": "7"
+        },
+        "expiryDefault": {
+          "type": "integer",
+          "description": "Default number of days to delete unused standard files that are flagged with EXPIRY",
+          "default": "14"
+        },
+        "user": {
+          "type": "string",
+          "description": "A username authorized to access and remove expired files"
+        },
+        "disabled": {},
+        "interval": {},
+        "service": {},
+        "at" : {},
+        "throttle": {},
+        "image": {},
+        "plane": {},
+        "resources": {},
+        "annotations": {},
+        "labels": {},
+        "egress": {}
+      },
+      "additionalProperties": false
     },
     "sashaservice": {
       "oneOf": [
@@ -2520,6 +2667,9 @@
         },
         "resources": {
           "$ref": "#/definitions/resources"
+        },
+        "egress": {
+          "$ref" : "#/definitions/egress"
         }
       }
     },
@@ -2670,7 +2820,7 @@
         "type": {
           "type": "string",
           "description" : "The searchable HPCC log column to be mapped - 'global' applies to all known fields",
-          "enum": [ "global", "workunits", "components", "audience", "class", "instance", "host"]
+          "enum": [ "global", "workunits", "components", "audience", "class", "instance", "node", "message", "logid", "processid", "threadid", "timestamp"]
         },
         "timeStampColumn": {
           "description" : "Name of timestamp column related to mapped field (only requried for 'global' mapping)",
@@ -2683,7 +2833,16 @@
         "storeName": {
           "description" : "Name of container housing mapped HPCC log column",
           "type": "string"
+        },
+        "keyColumn": {
+          "description" : "Name of join key column",
+          "type": "string"
+        },
+        "columnType": {
+          "description" : "Data type of the given column",
+          "type": "string"
         }
+        
       }
     },
     "sinks": {
@@ -2739,9 +2898,54 @@
           "name": {
             "type": "string",
             "description": "Remote client name"
+          },
+          "organization": {
+            "type": "string",
+            "description": "Remote client organization"
+          },
+          "secretTemplate": {
+            "type": "object",
+            "description": "cert-manager secretTemplate for this remoteClient secret",
+            "properties": {
+              "annotations": {
+                "type": "object",
+                "additionalProperties": { "type": "string" }
+              },
+              "labels": {
+                "type": "object",
+                "additionalProperties": { "type": "string" }
+              }
+            }
           }
         }
       }
+    },
+    "corsAllowed": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "origin": {
+            "description": "CORS allowed origin",
+            "type": "string"
+          },
+          "headers": {
+            "description": "a list of CORS allowed headers",
+            "type": "array",
+            "items": { "type": "string" }
+          },
+          "methods": {
+            "description": "a list of CORS allowed HTTP methods (default is GET, POST, OPTIONS)",
+            "type": "array",
+            "items": { "type": "string" }
+          }
+        }
+      }
+    },
+    "preferredDataReadPlanes": {
+      "description": "A list of planes that will take precedence to read from if logical files reside on mutiple planes",
+      "type": "array",
+      "items": { "type": "string" }
     }
   }
 }

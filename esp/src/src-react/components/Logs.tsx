@@ -1,9 +1,11 @@
 import * as React from "react";
 import { CommandBar, ContextualMenuItemType, ICommandBarItemProps } from "@fluentui/react";
 import { useConst } from "@fluentui/react-hooks";
-import { GetLogsExRequest } from "@hpcc-js/comms";
+import { GetLogsExRequest, TargetAudience, LogType } from "@hpcc-js/comms";
+import { Level } from "@hpcc-js/util";
 import { CreateLogsQueryStore } from "src/ESPLog";
 import nlsHPCC from "src/nlsHPCC";
+import { logColor } from "src/Utility";
 import { useFluentPagedGrid } from "../hooks/grid";
 import { HolyGrail } from "../layouts/HolyGrail";
 import { pushParams } from "../util/history";
@@ -13,8 +15,24 @@ import { ShortVerticalDivider } from "./Common";
 
 const FilterFields: Fields = {
     containerName: { type: "cloud-containername", label: nlsHPCC.ContainerName },
-    audience: { type: "string", label: nlsHPCC.Audience },
-    class: { type: "string", label: nlsHPCC.Class },
+    audience: {
+        type: "dropdown", label: nlsHPCC.Audience, options: [
+            { key: TargetAudience.Audit, text: "Audit" },
+            { key: TargetAudience.Operator, text: "Operator" },
+            { key: TargetAudience.Programmer, text: "Programmer" },
+            { key: TargetAudience.User, text: "User" }
+        ]
+    },
+    class: {
+        type: "dropdown", label: nlsHPCC.Class, options: [
+            { key: LogType.Disaster, text: "Audit" },
+            { key: LogType.Error, text: "Error" },
+            { key: LogType.Information, text: "Information" },
+            { key: LogType.Metric, text: "Metric" },
+            { key: LogType.Progress, text: "Progress" },
+            { key: LogType.Warning, text: "Warning" }
+        ]
+    },
     jobId: { type: "string", label: nlsHPCC.JobID },
     procId: { type: "string", label: nlsHPCC.ProcessID },
     threadId: { type: "string", label: nlsHPCC.ThreadID },
@@ -39,6 +57,20 @@ interface LogsProps {
     filter?: Partial<GetLogsExRequest>;
 }
 const emptyFilter: Partial<GetLogsExRequest> = {};
+
+const levelMap = (level) => {
+    switch (level) {
+        case "ERR":
+            return Level.error;
+        case "WRN":
+            return Level.warning;
+        case "PRO":
+            return Level.debug;
+        case "INF":
+        default:
+            return Level.info;
+    }
+};
 
 export const Logs: React.FunctionComponent<LogsProps> = ({
     wuid,
@@ -68,7 +100,14 @@ export const Logs: React.FunctionComponent<LogsProps> = ({
             message: { label: nlsHPCC.Message, sortable: false, },
             containerName: { label: nlsHPCC.ContainerName, width: 100, sortable: false },
             audience: { label: nlsHPCC.Audience, width: 60, sortable: false, },
-            class: { label: nlsHPCC.Class, width: 40, sortable: false, },
+            class: {
+                label: nlsHPCC.Class, width: 40, sortable: false,
+                formatter: React.useCallback(level => {
+                    const colors = logColor(levelMap(level));
+                    const styles = { backgroundColor: colors.background, padding: "2px 6px", color: colors.foreground };
+                    return <span style={styles}>{level}</span>;
+                }, [])
+            },
             jobId: { label: nlsHPCC.JobID, width: 140, sortable: false, hidden: wuid !== undefined, },
             procId: { label: nlsHPCC.ProcessID, width: 46, sortable: false, },
             sequence: { label: nlsHPCC.Sequence, width: 70, sortable: false, },

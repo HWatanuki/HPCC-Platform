@@ -11,6 +11,7 @@ define([
     "src/Utility",
     "src/Session",
     "src/KeyValStore",
+    "src/BuildInfo",
     "hpcc/LockDialogWidget",
 
     "dojox/html/entities",
@@ -21,14 +22,17 @@ define([
     "css!hpcc/css/hpcc.css"
 
 ], function (fx, dom, domStyle, ioQuery, ready, lang, arrayUtil, topic,
-    Utility, Session, KeyValStore, LockDialogWidget,
+    Utility, Session, KeyValStore, BuildInfo, LockDialogWidget,
     entities, Toaster) {
 
     Session.initSession();
 
+    const params = ioQuery.queryToObject(dojo.doc.location.search.substr((dojo.doc.location.search.substr(0, 1) === "?" ? 1 : 0)));
+    const hpccWidget = params.Widget ? params.Widget : "HPCCPlatformWidget";
+
     const store = KeyValStore.userKeyValStore();
-    store.get("ModernMode", false).then(modernMode => {
-        if (modernMode === String(true)) {
+    store.getEx(BuildInfo.ModernMode, { defaultValue: String(true) }).then(modernMode => {
+        if (modernMode === String(true) && hpccWidget !== "IFrameWidget") {
             window.location.replace("/esp/files/index.html");
         } else {
             ready(function () {
@@ -53,9 +57,6 @@ define([
     }
 
     function initUI() {
-        var params = ioQuery.queryToObject(dojo.doc.location.search.substr((dojo.doc.location.search.substr(0, 1) === "?" ? 1 : 0)));
-        var hpccWidget = params.Widget ? params.Widget : "HPCCPlatformWidget";
-
         topic.subscribe("hpcc/session_management_status", function (publishedMessage) {
             if (publishedMessage.status === "Unlocked") {
                 Session.unlock();

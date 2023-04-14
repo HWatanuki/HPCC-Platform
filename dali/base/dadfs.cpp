@@ -310,6 +310,12 @@ public:
             return str.append(": Failed to delete file: ").append(errstr);
         case DFSERR_RestrictedFileAccessDenied:
             return str.append(": Access to restricted file denied: ").append(errstr);
+        case DFSERR_EmptyStoragePlane:
+            return str.append(": Cluster does not have storage plane: ").append(errstr);
+        case DFSERR_MissingStoragePlane:
+            return str.append(": Storage plane missing: ").append(errstr);
+        case DFSERR_PhysicalCompressedPartInvalid:
+            return str.append(": Compressed part is not in the valid format: ").append(errstr);
         }
         return str.append("Unknown DFS Exception");
     }
@@ -923,29 +929,65 @@ public:
         if (nc<=1)
             return;
         StringBuffer cname;
-        StringArray clustlist;
+        StringArray preferedClusterList;
         if (lfname.getCluster(cname).length())
-            clustlist.append(cname.str());
+            preferedClusterList.append(cname.str());
         unsigned i;
         if (clusters) {
+            // if any clusters listed in the 'clusters'(csv list) are not already present in LFN cluster list (from lfname.getCluster), add them.
+            // NB: lfname.getCluster will only contain any groups if the lfn has been specified as lfn@<cluster>
             for (;;) {
                 const char *s = clusters;
                 while (*s&&(*s!=','))
                     s++;
                 if (s!=clusters) {
                     cname.clear().append(s-clusters,clusters);
-                    for (i=0;i<clustlist.ordinality();i++)
-                        if (strcmp(clustlist.item(i),cname.str())==0)
+                    for (i=0;i<preferedClusterList.ordinality();i++)
+                        if (strcmp(preferedClusterList.item(i),cname.str())==0)
                             break;
-                    if (i==clustlist.ordinality())
-                        clustlist.append(cname.str());
+                    if (i==preferedClusterList.ordinality())
+                        preferedClusterList.append(cname.str());
                 }
                 if (!*s)
                     break;
                 clusters = s+1;
             }
         }
-        if (clustlist.ordinality()==0) {
+
+        unsigned done = 0;
+        StringBuffer clusterLabel;
+        if (isContainerized()) {
+            if (0 != preferedClusterList.ordinality()) {
+                // In containerized mode, only the group (aka plane) names are considered.
+                ForEachItemIn(ci,preferedClusterList) {
+                    const char *cls = preferedClusterList.item(ci);
+                    for (i=done;i<nc;i++) {
+                        IClusterInfo &info=item(i);
+                        if (strisame(info.getClusterLabel(clusterLabel.clear()).str(),cls))
+                            break;
+                    }
+                    if (i<nc) {
+                        // move found IClusterInfo up ('done' is either top or position of last moved item)
+                        if (i) {
+                            Linked<IClusterInfo> tmp = &item(i);
+                            remove(i);
+                            add(*tmp.getClear(),done);
+                        }
+                        done++;
+                        if (done+1>=nc)
+                            break;
+                    }
+                }
+            }
+            return;
+        }
+        // else !isContainerized() ..
+
+        // NB: The below (preferedClusterList empty) will be the common case, because:
+        //  a) LFN's are not routinely specified with @<cluster>
+        //  b) setPreferred is not by default passed a custom perferred 'clusters' list (in fact setDefaultPreferredClusters is not called anywhere)
+        // NB2: In Thor, this ip distance calculation is going to happen on the Thor master in relation to it's IP.
+        if (preferedClusterList.ordinality()==0) {
             // sort by closest to this node
             const IpAddress &myip = queryMyNode()->endpoint();
             unsigned *d=new unsigned[nc];
@@ -964,11 +1006,18 @@ public:
             return;
         }
         Owned<IGroup> firstgrp;
-        unsigned done = 0;
         StringBuffer name;
-        StringBuffer name2;
-        ForEachItemIn(ci,clustlist) {
-            const char *cls = clustlist.item(ci);
+
+        // this manipulates the IClusterInfo order, to promote them, if their group
+        // matches (or are a super or subset or intersection) of their namesake in the group store
+        // Assuming the supplied 'clusters' exist and are not 'GRdisjoint' with the file's cluster group(s),
+        // those IClusterInfo's will be promoted.
+        // e.g. setDefaultPreferredClusters is set to CLUSTERXX, CLUSTERYY, and the file has some of them,
+        // those clusters will be preferred.
+        // NB: If the LFN has cluster(s) (e.g. lfn@mycluster), those will take precedence the preferred clusters
+        // because they will have been added to 'preferedClusterList' 1st (see above)
+        ForEachItemIn(ci,preferedClusterList) {
+            const char *cls = preferedClusterList.item(ci);
             Owned<IGroup> grp = queryNamedGroupStore().lookup(cls);
             if (!grp) {
                 IERRLOG("IDistributedFile::setPreferred - cannot find cluster %s",cls);
@@ -978,13 +1027,15 @@ public:
                 firstgrp.set(grp);
             for (i=done;i<nc;i++) {
                 IClusterInfo &info=item(i);
-                if (stricmp(info.getClusterLabel(name2.clear()).str(),name.str())==0)
+                if (stricmp(info.getClusterLabel(clusterLabel.clear()).str(),name.str())==0) // JCS - name never set?? should probably be 'cls'
                     break;
                 IGroup *grp2 = info.queryGroup();
                 if (grp2&&(grp->compare(grp2)!=GRdisjoint))
                     break;
             }
             if (i<nc) {
+                // true if found a non-disjoint group above
+                // move it above disjoint groups ('done' is either top or position of last non-disjoint group moved)
                 if (i) {
                     Linked<IClusterInfo> tmp = &item(i);
                     remove(i);
@@ -1132,6 +1183,8 @@ public:
     SecAccessFlags getFilePermissions(const char *lname,IUserDescriptor *user,unsigned auditflags);
     SecAccessFlags getNodePermissions(const IpAddress &ip,IUserDescriptor *user,unsigned auditflags);
     SecAccessFlags getFDescPermissions(IFileDescriptor *,IUserDescriptor *user,unsigned auditflags=0);
+    SecAccessFlags getDLFNPermissions(CDfsLogicalFileName &dlfn,IUserDescriptor *user,unsigned auditflags=0);
+    SecAccessFlags getDropZoneScopePermissions(const char *dropZoneName,const char *dropZonePath,IUserDescriptor *user,unsigned auditflags=0);
     void setDefaultUser(IUserDescriptor *user);
     IUserDescriptor* queryDefaultUser();
 
@@ -2350,7 +2403,7 @@ class CDistributedFilePart: public CInterface, implements IDistributedFilePart
     CriticalSection sect;
     StringAttr overridename;    // may or not be relative to directory
     bool            dirty;      // whether needs updating in tree
-
+    std::vector<unsigned> stripeNumber;
     offset_t getSize(bool checkCompressed);
 
 public:
@@ -2432,6 +2485,8 @@ public:
         dirty = false;
         return ret;
     }
+    virtual StringBuffer &getStorageFilePath(StringBuffer & path, unsigned copy) override;
+    virtual unsigned getStripeNum(unsigned copy) override;
 };
 
 // --------------------------------------------------------
@@ -2721,6 +2776,19 @@ static bool checkProtectAttr(const char *logicalname,IPropertyTree *froot,String
     }
     return prot;
 }
+
+bool hasTLK(IDistributedFile *f)
+{
+    if (!isFileKey(f))
+        return false;
+
+    unsigned np = f->numParts();
+    if (np <= 1)
+        return false;
+
+    return isPartTLK(&f->queryPart(np-1));
+}
+
 
 /**
  * A template class which implements the common methods of an IDistributedFile interface.
@@ -3479,6 +3547,10 @@ protected:
         if (0 == np)
             return false;
 
+        // Do not include the TLK in the skew calculation
+        if (hasTLK(this))
+            np--;
+
         offset_t maxPartSz = 0, minPartSz = (offset_t)-1, totalPartSz = 0;
 
         maxSkewPart = 0;
@@ -3592,11 +3664,11 @@ public:
 #endif
         offset_t totalsize = 0;
         offset_t totalCompressedSize = 0;
+        offset_t totalUncompressedSize = 0;
         unsigned checkSum = ~0;
         bool useableCheckSum = true;
         MemoryBuffer pmb;
         unsigned n = fdesc->numParts();
-        bool compressed = isCompressed(nullptr);
         for (unsigned i=0;i<n;i++)
         {
             IPropertyTree *partattr = &fdesc->queryPart(i)->queryProperties();
@@ -3615,14 +3687,18 @@ public:
                         totalsize = psz;
                     else
                         totalsize += psz;
-                    if (compressed)
-                    {
-                        psz = (offset_t)partattr->getPropInt64("@compressedSize", -1);
-                        if (psz==(offset_t)-1)
-                            totalCompressedSize = psz;
-                        else
-                            totalCompressedSize += psz;
-                    }
+
+                    psz = (offset_t)partattr->getPropInt64("@compressedSize", -1);
+                    if (psz==(offset_t)-1)
+                        totalCompressedSize = psz;
+                    else
+                        totalCompressedSize += psz;
+
+                    psz = (offset_t)partattr->getPropInt64("@uncompressedSize", -1);
+                    if (psz==(offset_t)-1)
+                        totalUncompressedSize = psz;
+                    else
+                        totalUncompressedSize += psz;
                 }
                 if (useableCheckSum)
                 {
@@ -3637,8 +3713,10 @@ public:
         shrinkFileTree(root);
         if (totalsize!=(offset_t)-1)
             queryAttributes().setPropInt64("@size", totalsize);
-        if (totalCompressedSize!=(offset_t)-1)
+        if ((totalCompressedSize!=(offset_t)-1) && (totalCompressedSize != 0))
             queryAttributes().setPropInt64("@compressedSize", totalCompressedSize);
+        if ((totalUncompressedSize!=(offset_t)-1) && (totalUncompressedSize != 0))
+            queryAttributes().setPropInt64("@uncompressedSize", totalUncompressedSize);
         if (useableCheckSum)
             queryAttributes().setPropInt64("@checkSum", checkSum);
         setModified();
@@ -4074,9 +4152,9 @@ public:
 
     virtual IDistributedFilePart &queryPart(unsigned idx) override
     {
-        if (idx<parts.ordinality())
-            return queryParts().item(idx);
-        return *(IDistributedFilePart *)NULL;
+        if (idx>=parts.ordinality())
+            throwUnexpectedX("CDistributedFileBase::queryPart out of range");
+        return queryParts().item(idx);
     }
 
     virtual IDistributedFilePart* getPart(unsigned idx) override
@@ -4175,6 +4253,7 @@ public:
             setClusters(fdesc);
             setParts(fdesc,false);
             setUserDescriptor(udesc, user);
+            setAccessed();
 #ifdef EXTRA_LOGGING
             LOGFDESC("CDistributedFile::attach fdesc",fdesc);
             LOGPTREE("CDistributedFile::attach root.2",root);
@@ -4886,6 +4965,57 @@ public:
     }
 };
 
+StringBuffer &CDistributedFilePart::getStorageFilePath(StringBuffer & path, unsigned copy)
+{
+    unsigned nc = copyClusterNum(copy, nullptr);
+    IClusterInfo &cluster = parent.clusters.item(nc);
+    const char *planeName = cluster.queryGroupName();
+    if (isEmptyString(planeName))
+    {
+        StringBuffer lname;
+        parent.getLogicalName(lname);
+        throw new CDFS_Exception(DFSERR_EmptyStoragePlane, lname.str());
+    }
+    // Need storage path(prefix) to work out path on storage plane
+    // (After removing prefix, the remaining path is the path on storage plane)
+    Owned<IStoragePlane> storagePlane = getDataStoragePlane(planeName, false);
+    if (!storagePlane)
+        throw new CDFS_Exception(DFSERR_MissingStoragePlane, planeName);
+
+    path.append(parent.directory);
+    if (parent.hasDirPerPart())
+        addPathSepChar(path).append(partIndex+1); // part subdir 1 based
+    addPathSepChar(path);
+    getPartName(path);
+
+    unsigned prefixLength = strlen(storagePlane->queryPrefix());
+    path.remove(0, prefixLength);
+    return path;
+}
+
+unsigned CDistributedFilePart::getStripeNum(unsigned copy)
+{
+    if (copy >= stripeNumber.size() || stripeNumber[copy]==UINT_MAX)
+    {
+        unsigned nc = copyClusterNum(copy, nullptr);
+        IClusterInfo &cluster = parent.clusters.item(nc);
+        const char *planeName = cluster.queryGroupName();
+        if (isEmptyString(planeName))
+        {
+            StringBuffer lname;
+            parent.getLogicalName(lname);
+            throw new CDFS_Exception(DFSERR_EmptyStoragePlane, lname.str());
+        }
+        Owned<IStoragePlane> storagePlane = getDataStoragePlane(planeName, false);
+        if (!storagePlane)
+            throw new CDFS_Exception(DFSERR_MissingStoragePlane, planeName);
+        if (copy >= stripeNumber.size())
+            stripeNumber.insert(stripeNumber.end(), copy - stripeNumber.size() + 1 , UINT_MAX); // create empty place holders
+        stripeNumber[copy] = calcStripeNumber(partIndex, parent.lfnHash, storagePlane->numDevices());
+    }
+    return stripeNumber[copy];
+}
+
 static unsigned findSubFileOrd(const char *name)
 {
     if (*name=='#') {
@@ -5583,6 +5713,24 @@ protected:
             target.setProp(prop, value);
     }
 
+    IDistributedFilePart *unprotectedQueryPart(unsigned idx)
+    {
+        if (0 == subfiles.ordinality())
+            return nullptr;
+        else if ((1 == subfiles.ordinality()))
+        {
+            if (idx>=subfiles.item(0).numParts())
+                return nullptr;
+            else
+                return &subfiles.item(0).queryPart(idx);
+        }
+        if (partscache.ordinality()==0)
+            loadParts(partscache,NULL);
+        if (idx>=partscache.ordinality())
+            return nullptr;
+        else
+            return &partscache.item(idx);
+    }
 public:
 
     virtual void checkFormatAttr(IDistributedFile *sub, const char* exprefix="") override
@@ -5819,19 +5967,16 @@ public:
     virtual IDistributedFilePart &queryPart(unsigned idx) override
     {
         CriticalBlock block(sect);
-        if (subfiles.ordinality()==1)
-            return subfiles.item(0).queryPart(idx);
-        if (partscache.ordinality()==0)
-            loadParts(partscache,NULL);
-        if (idx>=partscache.ordinality())
-            return *(IDistributedFilePart *)NULL;
-        return partscache.item(idx);
+        IDistributedFilePart *part = unprotectedQueryPart(idx);
+        if (nullptr == part)
+            throwUnexpectedX("CDistributedSuperFile::queryPart out of range");
+        return *part;
     }
 
     virtual IDistributedFilePart* getPart(unsigned idx) override
     {
-        IDistributedFilePart* ret = &queryPart(idx);
-        return LINK(ret);
+        CriticalBlock block(sect);
+        return LINK(unprotectedQueryPart(idx));
     }
 
     virtual IDistributedFilePartIterator *getIterator(IDFPartFilter *filter=NULL) override
@@ -6273,6 +6418,7 @@ public:
         IPropertyTree &attrs = queryAttributes();
         attrs.removeProp("@size");
         attrs.removeProp("@compressedSize");
+        attrs.removeProp("@uncompressedSize");
         attrs.removeProp("@checkSum");
         attrs.removeProp("@recordCount");   // recordCount not currently supported by superfiles
         attrs.removeProp("@formatCrc");     // formatCrc set if all consistant
@@ -6941,9 +7087,15 @@ offset_t CDistributedFilePart::getSize(bool checkCompressed)
             Owned<IFile> partfile = createIFile(getFilename(rfn,copy));
             if (checkCompressed && compressed)
             {
-                Owned<ICompressedFileIO> compressedIO = createCompressedFileReader(partfile);
-                if (compressedIO)
-                    ret = compressedIO->size();
+                Owned<IFileIO> partFileIO = partfile->open(IFOread);
+                if (partFileIO)
+                {
+                    Owned<ICompressedFileIO> compressedIO = createCompressedFileReader(partFileIO);
+                    if (compressedIO)
+                        ret = compressedIO->size();
+                    else
+                        throw new CDFS_Exception(DFSERR_PhysicalCompressedPartInvalid, partfile->queryFilename());
+                }
             }
             else
                 ret = partfile->size();
@@ -11644,9 +11796,7 @@ SecAccessFlags CDistributedFileDirectory::getFilePermissions(const char *lname,I
 {
     CDfsLogicalFileName dlfn;
     dlfn.set(lname);
-    StringBuffer scopes;
-    dlfn.getScopes(scopes);
-    return getScopePermissions(scopes.str(),user,auditflags);
+    return getScopePermissions(dlfn.get(),user,auditflags);
 }
 
 SecAccessFlags CDistributedFileDirectory::getNodePermissions(const IpAddress &ip,IUserDescriptor *user,unsigned auditflags)
@@ -11656,9 +11806,7 @@ SecAccessFlags CDistributedFileDirectory::getNodePermissions(const IpAddress &ip
     CDfsLogicalFileName dlfn;
     SocketEndpoint ep(0,ip);
     dlfn.setExternal(ep,"/x");
-    StringBuffer scopes;
-    dlfn.getScopes(scopes,true);
-    return getScopePermissions(scopes.str(),user,auditflags);
+    return getScopePermissions(dlfn.get(),user,auditflags);
 }
 
 SecAccessFlags CDistributedFileDirectory::getFDescPermissions(IFileDescriptor *fdesc,IUserDescriptor *user,unsigned auditflags)
@@ -11692,9 +11840,7 @@ SecAccessFlags CDistributedFileDirectory::getFDescPermissions(IFileDescriptor *f
                         localpath.setCharAt(k,'_');
                 CDfsLogicalFileName dlfn;
                 dlfn.setExternal(rfn.queryEndpoint(),localpath.str());
-                StringBuffer scopes;
-                dlfn.getScopes(scopes);
-                SecAccessFlags perm = getScopePermissions(scopes.str(),user,auditflags);
+                SecAccessFlags perm = getScopePermissions(dlfn.get(),user,auditflags);
                 if (perm < retPerms) {
                     retPerms = perm;
                     if (retPerms == SecAccess_None)
@@ -11704,6 +11850,18 @@ SecAccessFlags CDistributedFileDirectory::getFDescPermissions(IFileDescriptor *f
         }
     }
     return retPerms;
+}
+
+SecAccessFlags CDistributedFileDirectory::getDLFNPermissions(CDfsLogicalFileName &dlfn,IUserDescriptor *user,unsigned auditflags)
+{
+    return getScopePermissions(dlfn.get(),user,auditflags);
+}
+
+SecAccessFlags CDistributedFileDirectory::getDropZoneScopePermissions(const char *dropZoneName,const char *dropZonePath,IUserDescriptor *user,unsigned auditflags)
+{
+    CDfsLogicalFileName dlfn;
+    dlfn.setPlaneExternal(dropZoneName,dropZonePath);
+    return getScopePermissions(dlfn.get(),user,auditflags);
 }
 
 void CDistributedFileDirectory::setDefaultUser(IUserDescriptor *user)
@@ -13531,6 +13689,22 @@ bool CDistributedFileDirectory::removePhysicalPartFiles(const char *logicalName,
     return afor.ok;
 }
 
+void configurePreferredPlanes()
+{
+    StringBuffer preferredPlanes;
+    Owned<IPropertyTreeIterator> iter = getComponentConfigSP()->getElements("preferredDataReadPlanes");
+    if (iter->first())
+    {
+        preferredPlanes.append(iter->query().queryProp(nullptr));
+        while (iter->next())
+        {
+            preferredPlanes.append(',');
+            preferredPlanes.append(iter->query().queryProp(nullptr));
+        }
+        queryDistributedFileDirectory().setDefaultPreferredClusters(preferredPlanes);
+        PROGLOG("Preferred read planes: %s", preferredPlanes.str());
+    }
+}
 
 #ifdef _USE_CPPUNIT
 /*

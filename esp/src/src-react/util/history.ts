@@ -1,7 +1,8 @@
 import UniversalRouter, { ResolveContext } from "universal-router";
-import { parse, ParsedQuery, stringify } from "query-string";
+import { parse, ParsedQuery, pick, stringify } from "query-string";
 import { hashSum, scopedLogger } from "@hpcc-js/util";
 import { userKeyValStore } from "src/KeyValStore";
+import { QuerySortItem } from "src/store/Store";
 
 const logger = scopedLogger("../util/history.ts");
 
@@ -36,9 +37,45 @@ function parseHash(hash: string): HistoryLocation {
     };
 }
 
-export function parseSearch<T = ParsedQuery<string | boolean | number>>(_: string): T {
+export function parseQuery<T = ParsedQuery<string | boolean | number>>(_: string): T {
     if (_[0] !== "?") return {} as T;
     return { ...parse(_.substring(1), { parseBooleans: true, parseNumbers: true }) } as unknown as T;
+}
+
+export function parseSearch<T = ParsedQuery<string | boolean | number>>(_: string): T {
+    const parsed = parseQuery(_);
+    const excludeKeys = ["sortBy", "pageNum"];
+    Object.keys(parsed).forEach(key => {
+        if (excludeKeys.includes(key)) {
+            delete parsed[key];
+        }
+    });
+    return { ...parsed } as unknown as T;
+}
+
+export function parseSort(_: string): QuerySortItem {
+    const filter = parse(pick(_.substring(1), ["sortBy"]));
+    let descending = false;
+    let sortBy = filter?.sortBy?.toString();
+    if (filter?.sortBy?.toString().charAt(0) === "-") {
+        descending = true;
+        sortBy = filter?.sortBy.toString().substring(1);
+    }
+    return { attribute: sortBy, descending };
+}
+
+export function updateSort(sorted: boolean, descending: boolean, sortBy: string) {
+    updateParam("sortBy", sorted ? (descending ? "-" : "") + sortBy : undefined);
+}
+
+export function parsePage(_: string): number {
+    const filter = parse(pick(_.substring(1), ["pageNum"]));
+    const pageNum = filter?.pageNum?.toString() ?? "1";
+    return parseInt(pageNum, 10);
+}
+
+export function updatePage(pageNum: string) {
+    updateParam("pageNum", pageNum);
 }
 
 interface HistoryLocation {
@@ -92,18 +129,26 @@ class History<S extends object = object> {
         });
     }
 
+    trimRightSlash(str: string): string {
+        return str.replace(/\/+$/, "");
+    }
+
     push(to: { pathname?: string, search?: string }, state?: S) {
-        const newHash = `#${to.pathname || this.location.pathname}${to.search || ""}`;
-        globalHistory.pushState(state, "", newHash);
-        this.location = parseHash(newHash);
-        this.broadcast("PUSH");
+        const newHash = `#${this.trimRightSlash(to.pathname || this.location.pathname)}${to.search || ""}`;
+        if (window.location.hash !== newHash) {
+            globalHistory.pushState(state, "", newHash);
+            this.location = parseHash(newHash);
+            this.broadcast("PUSH");
+        }
     }
 
     replace(to: { pathname?: string, search?: string }, state?: S) {
-        const newHash = `#${to.pathname || this.location.pathname}${to.search || ""}`;
-        globalHistory.replaceState(state, "", newHash);
-        this.location = parseHash(newHash);
-        this.broadcast("REPLACE");
+        const newHash = `#${this.trimRightSlash(to.pathname || this.location.pathname)}${to.search || ""}`;
+        if (window.location.hash !== newHash) {
+            globalHistory.replaceState(state, "", newHash);
+            this.location = parseHash(newHash);
+            this.broadcast("REPLACE");
+        }
     }
 
     _listenerID = 0;
@@ -163,10 +208,11 @@ export function pushUrl(_: string, state?: any) {
     }, state);
 }
 
-export function replaceUrl(_: string, state?: any) {
+export function replaceUrl(_: string, state?: any, refresh: boolean = false) {
     hashHistory.replace({
         pathname: _
     }, state);
+    if (refresh) window.location.reload();
 }
 
 export function pushParam(key: string, val?: string | string[] | number | boolean, state?: any) {
@@ -178,7 +224,7 @@ export function pushParamExact(key: string, val?: string | string[] | number | b
 }
 
 export function pushParams(search: { [key: string]: string | string[] | number | boolean }, state?: any, keepEmpty: boolean = false) {
-    const params = parseSearch(hashHistory.location.search);
+    const params = parseQuery(hashHistory.location.search);
     for (const key in search) {
         const val = search[key];
         //  No empty strings OR "false" booleans...
@@ -192,7 +238,7 @@ export function pushParams(search: { [key: string]: string | string[] | number |
 }
 
 export function updateParam(key: string, val?: string | string[] | number | boolean, state?: any) {
-    const params = parseSearch(hashHistory.location.search);
+    const params = parseQuery(hashHistory.location.search);
     if (val === undefined) {
         delete params[key];
     } else {

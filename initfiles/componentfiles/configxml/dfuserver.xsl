@@ -79,16 +79,23 @@
             <xsl:attribute name="transferBufferSize">
                <xsl:value-of select="@transferBufferSize"/>
             </xsl:attribute> 
-            
+
+            <xsl:attribute name="useFtSlave">
+               <xsl:value-of select="@useFtSlave"/>
+            </xsl:attribute>
+
             <xsl:copy-of select="/Environment/Software/Directories"/>  
 
             <!--
             # Generated for configuration info. accessed by getGlobalConfig()
             -->
             <global>
-             <storage>
-              <xsl:copy-of select="/Environment/Software/RemoteStorage/*"/>
-             </storage>
+              <storage>
+                <xsl:copy-of select="/Environment/Software/RemoteStorage/*"/>
+              </storage>
+              <expert>
+                <xsl:copy-of select="/Environment/Software/Globals/@* | /Environment/Software/Globals/*"/>
+              </expert>
             </global>
 
             <SSH>

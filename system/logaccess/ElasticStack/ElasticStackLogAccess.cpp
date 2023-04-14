@@ -139,7 +139,7 @@ ElasticStackLogAccess::ElasticStackLogAccess(const std::vector<std::string> &hos
             if (logMap.hasProp(LOGMAP_SEARCHCOL_ATT))
                 m_instanceSearchColName = logMap.queryProp(LOGMAP_SEARCHCOL_ATT);
         }
-        else if (streq(logMapType, "host"))
+        else if (streq(logMapType, "host") || streq(logMapType, "node"))
         {
             if (logMap.hasProp(LOGMAP_INDEXPATTERN_ATT))
                 m_hostIndexSearchPattern = logMap.queryProp(LOGMAP_INDEXPATTERN_ATT);
@@ -322,7 +322,10 @@ unsigned processHitsJsonResp(IPropertyTreeIterator * iter, StringBuffer & return
 bool processESSearchJsonResp(LogQueryResultDetails & resultDetails, const cpr::Response & retrievedDocument, StringBuffer & returnbuf, LogAccessLogFormat format, bool reportHeader)
 {
     if (retrievedDocument.status_code != 200)
-        throw makeStringExceptionV(-1, "ElasticSearch request failed: %s", retrievedDocument.text.c_str());
+        throw makeStringExceptionV(-1, "ElasticSearch request failed: '%s'", retrievedDocument.text.c_str());
+
+    if (retrievedDocument.error)
+        throw makeStringExceptionV(-1, "ElasticSearch request failed: CPR error: '%s'", retrievedDocument.error.message.c_str());
 
 #ifdef _DEBUG
     DBGLOG("Retrieved ES JSON DOC: %s", retrievedDocument.text.c_str());

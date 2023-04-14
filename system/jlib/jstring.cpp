@@ -25,6 +25,7 @@
 #include <ctype.h>
 #include <time.h>
 #include <math.h>
+#include <algorithm>
 
 #include "jstring.hpp"
 #include "jexcept.hpp"
@@ -1595,6 +1596,28 @@ StringBuffer &appendDecodedURL(StringBuffer &s, const char *url)
     return s;
 }
 
+StringBuffer &appendDecodedURL(StringBuffer &s, size_t len, const char *url)
+{
+    size_t i = 0;
+    while (i < len)
+    {
+        char c = url[i++];
+        if (c == '+')
+            c = ' ';
+        else if (c == '%' && i + 1 < len)
+        {
+            if (isxdigit(url[i]) && isxdigit(url[i+1]))
+            {
+                c = translateHex(url[i], url[i+1]);
+                i+=2;
+            }
+        }
+        s.append(c);
+    }
+    return s;
+}
+
+
 static StringBuffer & appendStringExpandControl(StringBuffer &out, unsigned len, const char * src, bool addBreak, bool isCpp, bool isUtf8)
 {
     const int minBreakPos = 0;
@@ -2560,6 +2583,16 @@ bool clipStrToBool(const char * text)
 {
     return clipStrToBool(strlen(text), text);
 }
+
+
+void toLower(std::string & value)
+{
+    //Ugly.  Because we overload tolower in windows the std::transform resolution fails.
+    //Therefore assign the function to a variable to force the disambiguation.
+    int (*func)(int) = tolower;
+    std::transform(value.cbegin(), value.cend(), value.begin(), func);
+}
+
 
 
 StringBuffer & ncnameEscape(char const * in, StringBuffer & out)

@@ -156,7 +156,7 @@ export const LandingZone: React.FunctionComponent<LandingZoneProps> = ({
                         cls += ".ui-icon.ui-icon-triangle-1-" + (expanded ? "se" : "e");
                     }
                     //@ts-ignore
-                    const node = put("div" + cls + "[style=margin-" + dir + ": " + (level * (this.indentWidth || 9)) + "px; float: " + dir + "; margin-top: 3px]");
+                    const node = put("div" + cls + "[style=margin-" + dir + ": " + (level * (this.indentWidth || 9)) + "px; float: " + dir + ";" + (!hasChildren ? " width: 16px; height: 16px;" : "") + "]");
                     node.innerHTML = "&nbsp;";
                     return node;
                 }
@@ -184,6 +184,7 @@ export const LandingZone: React.FunctionComponent<LandingZoneProps> = ({
                 } else {
                     FileSpray.DeleteDropZoneFile({
                         request: {
+                            DropZoneName: item.DropZone.Name,
                             NetAddress: item.NetAddress,
                             Path: item.fullFolderPath,
                             OS: item.OS,
@@ -226,7 +227,7 @@ export const LandingZone: React.FunctionComponent<LandingZoneProps> = ({
                 selection.forEach(item => {
                     const downloadIframeName = "downloadIframe_" + item.calculatedID;
                     const frame = iframe.create(downloadIframeName);
-                    const url = ESPRequest.getBaseURL("FileSpray") + "/DownloadFile?Name=" + encodeURIComponent(item.name) + "&NetAddress=" + item.NetAddress + "&Path=" + encodeURIComponent(item.fullFolderPath) + "&OS=" + item.OS;
+                    const url = `${ESPRequest.getBaseURL("FileSpray")}/DownloadFile?Name=${encodeURIComponent(item.name)}&NetAddress=${item.NetAddress}&Path=${encodeURIComponent(item.fullFolderPath)}&OS=${item.OS}&DropZoneName=${item.DropZone.Name}`;
                     iframe.setSrc(frame, url, true);
                 });
             }

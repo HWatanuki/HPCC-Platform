@@ -327,11 +327,13 @@ jlib_decl IPropertyTree * getGlobalConfig();
 jlib_decl IPropertyTree * getComponentConfig();
 jlib_decl Owned<IPropertyTree> getGlobalConfigSP(); // get smart pointer
 jlib_decl Owned<IPropertyTree> getComponentConfigSP(); // get smart pointer
+jlib_decl const char * queryComponentName();
 
 // ConfigUpdateFunc calls are made in a mutex, but after new confis are swapped in
 typedef std::function<void (const IPropertyTree *oldComponentConfiguration, const IPropertyTree *oldGlobalConfiguration)> ConfigUpdateFunc;
-jlib_decl unsigned installConfigUpdateHook(ConfigUpdateFunc notifyFunc);
+jlib_decl unsigned installConfigUpdateHook(ConfigUpdateFunc notifyFunc, bool callWhenInstalled);
 jlib_decl void removeConfigUpdateHook(unsigned notifyFuncId);
+jlib_decl void executeConfigUpdaterCallbacks();
 
 class jlib_decl CConfigUpdateHook
 {
@@ -375,6 +377,9 @@ public:
 jlib_decl IPropertyTree *createPTreeFromYAMLString(const char *yaml, byte flags=ipt_none, PTreeReaderOptions readFlags=ptr_ignoreWhiteSpace, IPTreeMaker *iMaker=NULL);
 jlib_decl IPropertyTree *createPTreeFromYAMLString(unsigned len, const char *yaml, byte flags=ipt_none, PTreeReaderOptions readFlags=ptr_ignoreWhiteSpace, IPTreeMaker *iMaker=NULL);
 jlib_decl IPropertyTree *createPTreeFromYAMLFile(const char *filename, byte flags=ipt_none, PTreeReaderOptions readFlags=ptr_ignoreWhiteSpace, IPTreeMaker *iMaker=NULL);
+
+jlib_decl void applyProperties(IPropertyTree * target, const IProperties * source);
+jlib_decl void applyProperty(IPropertyTree * target, const char * source);              // Process name[=value]
 
 #define YAML_HideRootArrayObject 0x04
 #define YAML_SortTags XML_SortTags

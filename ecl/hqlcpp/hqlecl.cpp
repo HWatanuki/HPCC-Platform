@@ -702,7 +702,7 @@ bool HqlDllGenerator::doCompile(ICppCompiler * compiler)
     StringBufferAdaptor linkOptionAdaptor(options);
     wu->getDebugValue("linkOptions", linkOptionAdaptor);
     compiler->addLinkOption(options.str());
-    if (wu->getDebugValueBool("stripHelperSymbols", true))
+    if (wu->getDebugValueBool("stripHelperSymbols", !debug))
         compiler->setStripSymbols(true);
 
     options.clear();
@@ -845,7 +845,7 @@ static void processMetaCommands(HqlCppTranslator & translator, IWorkUnit * wu, H
 {
     NewThorStoredReplacer transformer(translator, wu, ctxCallback);
 
-    translator.traceExpression("before process meta commands", query.expr);
+    translator.traceExpression("beforeStoredReplacer", query.expr);
 
     transformer.analyse(query.expr);
     if (transformer.needToTransform())
@@ -901,4 +901,20 @@ void recordQueueFilePrefixes(IWorkUnit * wu, IPropertyTree * configuration)
             prefix = "";
         wu->setApplicationValue("prefix", name, prefix, true);
     }
+}
+
+CompilerType queryCompilerType(IConstWorkUnit * wu, CompilerType defaultCompiler)
+{
+    CompilerType targetCompiler = defaultCompiler;
+    if (wu->hasDebugValue("targetGcc"))
+        targetCompiler = wu->getDebugValueBool("targetGcc", false) ? GccCppCompiler : Vs6CppCompiler;
+
+    SCMStringBuffer compilerText;
+    wu->getDebugValue("targetCompiler", compilerText);
+    for (CompilerType iComp = (CompilerType)0; iComp < MaxCompiler; iComp = (CompilerType)(iComp+1))
+    {
+        if (stricmp(compilerText.s.str(), compilerTypeText[iComp]) == 0)
+            targetCompiler = iComp;
+    }
+    return targetCompiler;
 }

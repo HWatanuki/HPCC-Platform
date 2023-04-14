@@ -45,7 +45,7 @@ static ILogMsgManager * theManager = nullptr;
 static PassAllLogMsgFilter * thePassAllFilter = nullptr;
 static PassLocalLogMsgFilter * thePassLocalFilter = nullptr;
 static PassNoneLogMsgFilter * thePassNoneFilter = nullptr;
-static HandleLogMsgHandlerTable * theStderrHandler = nullptr;
+static HandleLogMsgHandler * theStderrHandler = nullptr;
 static CSysLogEventLogger * theSysLogEventLogger = nullptr;
 
 
@@ -258,16 +258,30 @@ void LogMsgJobInfo::deserialize(MemoryBuffer & in)
 }
 
 static LogMsgJobInfo globalDefaultJobInfo(UnknownJob, UnknownUser);
+
+// NOTE - extern thread_local variables are very inefficient - don't be tempted to expose the variables directly
+
+static  TraceFlags defaultTraceFlags = TraceFlags::Standard;
 static thread_local LogMsgJobInfo defaultJobInfo;
+static thread_local TraceFlags threadTraceFlags = TraceFlags::Standard;
+static thread_local const IContextLogger *default_thread_logctx = nullptr;
 
 const LogMsgJobInfo unknownJob(UnknownJob, UnknownUser);
 
-void resetThreadLogging()
+void getThreadLoggingInfo(const IContextLogger * &_logctx, TraceFlags &_traceFlags)
+{
+    _logctx = default_thread_logctx;
+    _traceFlags = threadTraceFlags;
+}
+
+void resetThreadLogging(const IContextLogger *_logctx, TraceFlags _traceFlags)
 {
     // Note - as implemented the thread default job info is determined by what the global one was when the thread was created.
     // There is an alternative interpretation, that an unset thread-local one should default to whatever the global one is at the time the thread one is used.
     // In practice I doubt there's a lot of difference as global one is likely to be set once at program startup
     defaultJobInfo = globalDefaultJobInfo;
+    default_thread_logctx = _logctx;
+    threadTraceFlags = _traceFlags;
 }
 
 const LogMsgJobInfo & checkDefaultJobInfo(const LogMsgJobInfo & _jobInfo)
@@ -469,6 +483,79 @@ StringBuffer & LogMsg::toStringXML(StringBuffer & out, unsigned fields) const
     if((fields & MSGFIELD_code) && (msgCode != NoLogMsgCode))
         out.append("code=\"").append(msgCode).append("\" ");
     out.append("text=\"").append(text.str()).append("\" />\n");
+    return out;
+}
+
+StringBuffer & LogMsg::toStringJSON(StringBuffer & out, unsigned fields) const
+{
+    out.ensureCapacity(LOG_MSG_FORMAT_BUFFER_LENGTH);
+    StringBuffer encodedMsg;
+    out.append("{ \"MSG\": \"").append(encodeJSON(encodedMsg, text.str())).append("\"");
+
+    if(fields & MSGFIELD_msgID)
+        out.append(", \"MID\": \"").append(sysInfo.queryMsgID()).append("\"");
+    if(fields & MSGFIELD_audience)
+        out.append(", \"AUD\": \"").append(LogMsgAudienceToFixString(category.queryAudience())).append("\"");
+    if(fields & MSGFIELD_class)
+        out.append(", \"CLS\": \"").append(LogMsgClassToFixString(category.queryClass())).append("\"");
+    if(fields & MSGFIELD_detail)
+        out.append(", \"DET\": \"").append(category.queryDetail()).append("\"");
+    if(fields & MSGFIELD_timeDate)
+    {
+        time_t timeNum = sysInfo.queryTime();
+        char timeString[23];
+        struct tm timeStruct;
+        localtime_r(&timeNum, &timeStruct);
+        if(fields & MSGFIELD_date)
+        {
+            strftime(timeString, 23, ", \"DATE\": \"%Y-%m-%d\"", &timeStruct);
+            out.append(timeString);
+        }
+        if(fields & MSGFIELD_microTime)
+        {
+            out.appendf(", \"TIME\": \"%02d:%02d:%02d.%06d\"", timeStruct.tm_hour, timeStruct.tm_min, timeStruct.tm_sec, sysInfo.queryUSecs());
+        }
+        else if(fields & MSGFIELD_milliTime)
+        {
+            out.appendf(", \"TIME\": \"%02d:%02d:%02d.%03d\"", timeStruct.tm_hour, timeStruct.tm_min, timeStruct.tm_sec, sysInfo.queryUSecs()/1000);
+        }
+        else if(fields & MSGFIELD_time)
+        {
+            out.appendf(", \"TIME\": \"%02d:%02d:%02d\"", timeStruct.tm_hour, timeStruct.tm_min, timeStruct.tm_sec);
+        }
+    }
+    if(fields & MSGFIELD_process)
+        out.append(", \"PID\": \"").append(sysInfo.queryProcessID()).append("\"");
+    if(fields & MSGFIELD_thread)
+        out.append(", \"TID\": \"").append(sysInfo.queryThreadID()).append("\"");
+    if(fields & MSGFIELD_session)
+    {
+        if(sysInfo.querySessionID() == UnknownSession)
+            out.append(", \"SES\": \"UNK\" ");
+        else
+            out.append(", \"SES\": \"").append(sysInfo.querySessionID()).append("\"");
+    }
+    if(fields & MSGFIELD_node)
+    {
+        out.append(", \"NODE\": \"");
+        sysInfo.queryNode()->getUrlStr(out);
+        out.append("\"");
+    }
+    if(fields & MSGFIELD_job)
+    {
+        out.appendf(", \"JOBID\": \"%s\"", jobInfo.queryJobIDStr());
+    }
+    if(fields & MSGFIELD_user)
+    {
+        if(jobInfo.queryUserID() == UnknownUser)
+            out.append(", \"USER\": \"UNK\" ");
+        else
+            out.append(", \"USER\": \"").append(jobInfo.queryUserID()).append("\"");
+    }
+    if((fields & MSGFIELD_code) && (msgCode != NoLogMsgCode))
+        out.append(", \"CODE\": \"").append(msgCode).append("\"");
+
+    out.append(" }\n");
     return out;
 }
 
@@ -773,6 +860,25 @@ void HandleLogMsgHandlerTable::addToPTree(IPropertyTree * tree) const
     tree->addPropTree("handler", handlerTree);
 }
 
+void HandleLogMsgHandlerJSON::handleMessage(const LogMsg & msg)
+{
+    CriticalBlock block(crit);
+    msg.toStringJSON(curMsgText.clear(), messageFields);
+    fputs(curMsgText.str(), handle);
+}
+
+void HandleLogMsgHandlerJSON::addToPTree(IPropertyTree * tree) const
+{
+    IPropertyTree * handlerTree = createPTree(ipt_caseInsensitive);
+    if(handle==stderr)
+        handlerTree->setProp("@type", "stderr");
+    else
+        handlerTree->setProp("@type", "mischandle");
+    handlerTree->setPropInt("@fields", messageFields);
+    handlerTree->setProp("@writeJSON", "true");
+    tree->addPropTree("handler", handlerTree);
+}
+
 void HandleLogMsgHandlerXML::handleMessage(const LogMsg & msg)
 {
     CriticalBlock block(crit);
@@ -873,6 +979,31 @@ void FileLogMsgHandlerXML::addToPTree(IPropertyTree * tree) const
     handlerTree->setPropInt("@fields", messageFields);
     if(append) handlerTree->setProp("@append", "true");
     if(flushes) handlerTree->setProp("@flushes", "true");
+    tree->addPropTree("handler", handlerTree);
+}
+
+void FileLogMsgHandlerJSON::handleMessage(const LogMsg & msg)
+{
+    CriticalBlock block(crit);
+    msg.toStringJSON(curMsgText.clear(), messageFields);
+    fputs(curMsgText.str(), handle);
+    if(flushes)
+        fflush(handle);
+}
+
+void FileLogMsgHandlerJSON::addToPTree(IPropertyTree * tree) const
+{
+    IPropertyTree * handlerTree = createPTree(ipt_caseInsensitive);
+    handlerTree->setProp("@type", "file");
+    handlerTree->setProp("@filename", filename.get());
+    if(headerText)
+        handlerTree->setProp("@headertext", headerText.get());
+    handlerTree->setPropInt("@fields", messageFields);
+    handlerTree->setProp("@writeJSON", "true");
+    if(append)
+        handlerTree->setProp("@append", "true");
+    if(flushes)
+        handlerTree->setProp("@flushes", "true");
     tree->addPropTree("handler", handlerTree);
 }
 
@@ -1973,18 +2104,32 @@ ILogMsgFilter * getSwitchLogMsgFilterOwn(ILogMsgFilter * switchFilter, ILogMsgFi
     return ret;
 }
 
-ILogMsgHandler * getHandleLogMsgHandler(FILE * handle, unsigned fields, bool writeXML)
+ILogMsgHandler * getHandleLogMsgHandler(FILE * handle, unsigned fields, LogHandlerFormat logFormat)
 {
-    if(writeXML)
+    switch (logFormat)
+    {
+    case LOGFORMAT_xml:
         return new HandleLogMsgHandlerXML(handle, fields);
-    return new HandleLogMsgHandlerTable(handle, fields);
+    case LOGFORMAT_json:
+        return new HandleLogMsgHandlerJSON(handle, fields);
+    case LOGFORMAT_table:
+    default:
+        return new HandleLogMsgHandlerTable(handle, fields);
+    }
 }
 
-ILogMsgHandler * getFileLogMsgHandler(const char * filename, const char * headertext, unsigned fields, bool writeXML, bool append, bool flushes)
+ILogMsgHandler * getFileLogMsgHandler(const char * filename, const char * headertext, unsigned fields, LogHandlerFormat logFormat, bool append, bool flushes)
 {
-    if(writeXML)
+    switch (logFormat)
+    {
+    case LOGFORMAT_xml:
         return new FileLogMsgHandlerXML(filename, headertext, fields, append, flushes);
-    return new FileLogMsgHandlerTable(filename, headertext, fields, append, flushes);
+    case LOGFORMAT_json:
+        return new FileLogMsgHandlerJSON(filename, headertext, fields, append, flushes);
+    case LOGFORMAT_table:
+    default:
+        return new FileLogMsgHandlerTable(filename, headertext, fields, append, flushes);
+    }
 }
 
 ILogMsgHandler * getRollingFileLogMsgHandler(const char * filebase, const char * fileextn, unsigned fields, bool append, bool flushes, const char *initialName, const char *alias, bool daily, long maxLogSize)
@@ -2021,7 +2166,7 @@ ILogMsgHandler * getLogMsgHandlerFromPTree(IPropertyTree * tree)
             fields = logMsgFieldsFromAbbrevs(fstr);
     }
     if(strcmp(type.str(), "stderr")==0)
-        return getHandleLogMsgHandler(stderr, fields, tree->hasProp("@writeXML"));
+        return getHandleLogMsgHandler(stderr, fields, tree->hasProp("@writeXML") ? LOGFORMAT_xml : LOGFORMAT_table);
     else if(strcmp(type.str(), "file")==0)
     {
         StringBuffer filename;
@@ -2030,10 +2175,14 @@ ILogMsgHandler * getLogMsgHandlerFromPTree(IPropertyTree * tree)
         {
             StringBuffer headertext;
             tree->getProp("@headertext", headertext);
-            return getFileLogMsgHandler(filename.str(), headertext.str(), fields, !(tree->hasProp("@writeTable")), tree->hasProp("@append"), tree->hasProp("@flushes"));
+            //JSON format now available, but currently not an option for file bound logs
+            return getFileLogMsgHandler(filename.str(), headertext.str(), fields, !(tree->hasProp("@writeTable")) ? LOGFORMAT_xml : LOGFORMAT_table, tree->hasProp("@append"), tree->hasProp("@flushes"));
         }
         else
-            return getFileLogMsgHandler(filename.str(), 0, fields, !(tree->hasProp("@writeTable")), tree->hasProp("@append"), tree->hasProp("@flushes"));
+        {
+            //JSON format now available, but currently not an option for file bound logs
+            return getFileLogMsgHandler(filename.str(), 0, fields, !(tree->hasProp("@writeTable")) ? LOGFORMAT_xml : LOGFORMAT_table, tree->hasProp("@append"), tree->hasProp("@flushes"));
+        }
     }
     else if(strcmp(type.str(), "binary")==0)
     {
@@ -2045,13 +2194,13 @@ ILogMsgHandler * getLogMsgHandlerFromPTree(IPropertyTree * tree)
     return LINK(theStderrHandler);
 }
 
-ILogMsgHandler * attachStandardFileLogMsgMonitor(const char * filename, const char * headertext, unsigned fields, unsigned audiences, unsigned classes, LogMsgDetail detail, bool writeXML, bool append, bool flushes, bool local)
+ILogMsgHandler * attachStandardFileLogMsgMonitor(const char * filename, const char * headertext, unsigned fields, unsigned audiences, unsigned classes, LogMsgDetail detail, LogHandlerFormat logFormat, bool append, bool flushes, bool local)
 {
 #ifdef FILE_LOG_ENABLES_QUEUEUING
     queryLogMsgManager()->enterQueueingMode();
 #endif
     ILogMsgFilter * filter = getCategoryLogMsgFilter(audiences, classes, detail, local);
-    ILogMsgHandler * handler = getFileLogMsgHandler(filename, headertext, fields, writeXML, append, flushes);
+    ILogMsgHandler * handler = getFileLogMsgHandler(filename, headertext, fields, logFormat, append, flushes);
     queryLogMsgManager()->addMonitorOwn(handler, filter);
     return handler;
 }
@@ -2067,10 +2216,10 @@ ILogMsgHandler * attachStandardBinLogMsgMonitor(const char * filename, unsigned 
     return handler;
 }
 
-ILogMsgHandler * attachStandardHandleLogMsgMonitor(FILE * handle, unsigned fields, unsigned audiences, unsigned classes, LogMsgDetail detail, bool writeXML, bool local)
+ILogMsgHandler * attachStandardHandleLogMsgMonitor(FILE * handle, unsigned fields, unsigned audiences, unsigned classes, LogMsgDetail detail, LogHandlerFormat logFormat, bool local)
 {
     ILogMsgFilter * filter = getCategoryLogMsgFilter(audiences, classes, detail, local);
-    ILogMsgHandler * handler = getHandleLogMsgHandler(handle, fields, writeXML);
+    ILogMsgHandler * handler = getHandleLogMsgHandler(handle, fields, logFormat);
     queryLogMsgManager()->addMonitorOwn(handler, filter);
     return handler;
 }
@@ -2164,6 +2313,7 @@ MODULE_INIT(INIT_PRIORITY_JLOG)
     thePassLocalFilter = new PassLocalLogMsgFilter();
     thePassNoneFilter = new PassNoneLogMsgFilter();
     theStderrHandler = new HandleLogMsgHandlerTable(stderr, MSGFIELD_STANDARD);
+
     theSysLogEventLogger = new CSysLogEventLogger;
     theManager = new CLogMsgManager();
     theManager->resetMonitors();
@@ -2195,6 +2345,7 @@ static constexpr const char * logQueueDropAtt = "@queueDrop";
 static constexpr const char * logDisabledAtt = "@disabled";
 static constexpr const char * useSysLogpAtt ="@enableSysLog";
 static constexpr const char * capturePostMortemAtt ="@postMortem";
+static constexpr const char * logFormatAtt ="@format";
 
 static constexpr unsigned queueLenDefault = 512;
 static constexpr unsigned queueDropDefault = 0; // disabled by default
@@ -2210,6 +2361,32 @@ void setupContainerizedLogMsgHandler()
             removeLog();
             return;
         }
+
+        if (logConfig->hasProp(logFormatAtt))
+        {
+            const char *logFormat = logConfig->queryProp(logFormatAtt);
+            LOG(MCdebugInfo, "JLog: log format configuration detected '%s'!", logFormat);
+
+            bool newFormatDetected = false;
+            if (streq(logFormat, "xml"))
+            {
+                theStderrHandler = new HandleLogMsgHandlerXML(stderr, MSGFIELD_STANDARD);
+                newFormatDetected = true;
+            }
+            else if (streq(logFormat, "json"))
+            {
+                theStderrHandler = new HandleLogMsgHandlerJSON(stderr, MSGFIELD_STANDARD);
+                newFormatDetected = true;
+            }
+            else if (streq(logFormat, "table"))
+                LOG(MCdebugInfo, "JLog: default log format detected: '%s'!", logFormat);
+            else
+                LOG(MCoperatorWarning, "JLog: Invalid log format configuration detected '%s'!", logFormat);
+
+            if (newFormatDetected)
+                theManager->resetMonitors();
+        }
+
         if (logConfig->hasProp(logFieldsAtt))
         {
             //Supported logging fields: AUD,CLS,DET,MID,TIM,DAT,PID,TID,NOD,JOB,USE,SES,COD,MLT,MCT,NNT,COM,QUO,PFX,ALL,STD
@@ -2226,12 +2403,16 @@ void setupContainerizedLogMsgHandler()
             unsigned msgClasses = MSGCLS_all;
             const char *logClasses = logConfig->queryProp(logMsgClassesAtt);
             if (!isEmptyString(logClasses))
+            {
                 msgClasses = logMsgClassesFromAbbrevs(logClasses);
+            }
 
             unsigned msgAudiences = MSGAUD_all;
             const char *logAudiences = logConfig->queryProp(logMsgAudiencesAtt);
             if (!isEmptyString(logAudiences))
+            {
                 msgAudiences = logMsgAudsFromAbbrevs(logAudiences);
+            }
 
             const bool local = true; // Do not include remote messages from other components
             Owned<ILogMsgFilter> filter = getCategoryLogMsgFilter(msgAudiences, msgClasses, logDetail, local);
@@ -2557,7 +2738,7 @@ void IContextLogger::CTXLOG(const char *format, ...) const
 {
     va_list args;
     va_start(args, format);
-    CTXLOGva(format, args);
+    CTXLOGva(MCdebugInfo, unknownJob, NoLogMsgCode, format, args);
     va_end(args);
 }
 
@@ -2616,11 +2797,9 @@ public:
     virtual void Link() const {}
     virtual bool Release() const { return false; }
 
-    virtual void CTXLOGva(const char *format, va_list args) const __attribute__((format(printf,2,0)))
+    virtual void CTXLOGva(const LogMsgCategory & cat, const LogMsgJobInfo & job, LogMsgCode code, const char *format, va_list args) const override  __attribute__((format(printf,5,0)))
     {
-        StringBuffer ss;
-        ss.valist_appendf(format, args);
-        DBGLOG("%s", ss.str());
+        VALOG(cat, job, code, format, args);
     }
     virtual void logOperatorExceptionVA(IException *E, const char *file, unsigned line, const char *format, va_list args) const __attribute__((format(printf,5,0)))
     {
@@ -2891,7 +3070,7 @@ public:
                 lfs.set(fullFileSpec);
             else
                 lfs.set(logFileSpec.append(extension).str());
-            lmh = getFileLogMsgHandler(lfs.str(), NULL, msgFields, false);
+            lmh = getFileLogMsgHandler(lfs.str(), NULL, msgFields);
         }
         lmh->getLogName(expandedLogSpec);
         queryLogMsgManager()->addMonitorOwn( lmh, getCategoryLogMsgFilter(msgAudiences, msgClasses, maxDetail, local));
@@ -3112,3 +3291,131 @@ IRemoteLogAccess *queryRemoteLogAccessor()
     );
 }
 
+bool doTrace(TraceFlags featureFlag, TraceFlags level)
+{
+    if ((threadTraceFlags & TraceFlags::LevelMask) < level)
+        return false;
+    return (threadTraceFlags & featureFlag) == featureFlag;
+}
+
+void updateTraceFlags(TraceFlags flag, bool global)
+{
+    if (global)
+        defaultTraceFlags = flag;
+    threadTraceFlags = flag;
+}
+
+TraceFlags queryTraceFlags()
+{
+    return threadTraceFlags;
+}
+
+TraceFlags queryDefaultTraceFlags()
+{
+    return defaultTraceFlags;
+}
+
+LogContextScope::LogContextScope(const IContextLogger *ctx)
+{
+    prevFlags = threadTraceFlags;
+    prev = default_thread_logctx;
+    default_thread_logctx = ctx;
+}
+LogContextScope::LogContextScope(const IContextLogger *ctx, TraceFlags traceFlags)
+{
+    prevFlags = threadTraceFlags;
+    threadTraceFlags = traceFlags;
+    prev = default_thread_logctx;
+    default_thread_logctx = ctx;
+}
+LogContextScope::~LogContextScope()
+{
+    default_thread_logctx = prev;
+    threadTraceFlags = prevFlags;
+}
+
+TraceFlags loadTraceFlags(const IPropertyTree *ptree, const std::initializer_list<TraceOption> &optNames, TraceFlags dft)
+{
+    for (auto &o: optNames)
+    {
+        VStringBuffer attrName("@%s", o.name);
+        if (!ptree->hasProp(attrName))
+            attrName.clear().appendf("_%s", o.name);
+        if (ptree->hasProp(attrName))
+        {
+            if (ptree->getPropBool(attrName, false))
+                dft |= o.value;
+            else
+                dft &= ~o.value;
+        }
+
+    }
+    return dft;
+}
+
+void ctxlogReport(const LogMsgCategory & cat, const char * format, ...) 
+{
+    va_list args;
+    va_start(args, format);
+    ctxlogReportVA(cat, unknownJob, NoLogMsgCode, format, args); 
+    va_end(args);
+}
+
+void ctxlogReportVA(const LogMsgCategory & cat, const char * format, va_list args) 
+{
+    ctxlogReportVA(cat, unknownJob, NoLogMsgCode, format, args); 
+}
+void ctxlogReport(const LogMsgCategory & cat, LogMsgCode code, const char * format, ...)
+{
+    va_list args;
+    va_start(args, format);
+    ctxlogReportVA(cat, unknownJob, code, format, args); 
+    va_end(args);
+}
+void ctxlogReportVA(const LogMsgCategory & cat, LogMsgCode code, const char * format, va_list args)
+{
+    ctxlogReportVA(cat, unknownJob, code, format, args); 
+}
+void ctxlogReport(const LogMsgCategory & cat, const IException * e, const char * prefix)
+{
+    ctxlogReport(cat, unknownJob, e, prefix);
+}
+void ctxlogReport(const LogMsgCategory & cat, const LogMsgJobInfo & job, const char * format, ...)
+{
+    va_list args;
+    va_start(args, format);
+    ctxlogReportVA(cat, job, NoLogMsgCode, format, args); 
+    va_end(args);
+}
+void ctxlogReportVA(const LogMsgCategory & cat, const LogMsgJobInfo & job, const char * format, va_list args)
+{
+    ctxlogReportVA(cat, job, NoLogMsgCode, format, args); 
+}
+void ctxlogReport(const LogMsgCategory & cat, const LogMsgJobInfo & job, LogMsgCode code, const char * format, ...)
+{
+    va_list args;
+    va_start(args, format);
+    ctxlogReportVA(cat, job, code, format, args); 
+    va_end(args);
+}
+void ctxlogReportVA(const LogMsgCategory & cat, const LogMsgJobInfo & job, LogMsgCode code, const char * format, va_list args) 
+{
+    if (default_thread_logctx)
+    {
+        LogContextScope ls(nullptr);
+        ls.prev->CTXLOGva(cat, job, code, format, args);
+    }
+    else
+        queryLogMsgManager()->report_va(cat, job, code, format, args);
+}
+void ctxlogReport(const LogMsgCategory & cat, const LogMsgJobInfo & job, const IException * e, const char * prefix)
+{
+    StringBuffer buff;
+    e->errorMessage(buff);
+    ctxlogReport(cat, job, e->errorCode(), "%s%s%s", prefix ? prefix : "", prefix ? prefix : " : ", buff.str());
+}
+IException * ctxlogReport(IException * e, const char * prefix, LogMsgClass cls)
+{
+    ctxlogReport(MCexception(e, cls), unknownJob, e, prefix);
+    return e;
+}

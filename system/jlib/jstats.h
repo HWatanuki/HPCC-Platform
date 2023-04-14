@@ -142,6 +142,8 @@ enum StatsMergeAction
     StatsMergeMin,
     StatsMergeMax,
     StatsMergeAppend,
+    StatsMergeFirst,
+    StatsMergeLast,
 };
 
 interface IStatisticGatherer : public IInterface
@@ -545,16 +547,7 @@ public:
         unsigned num = mapping.numStatistics();
         values = new CRuntimeStatistic[num+1]; // extra entry is to gather unexpected stats and avoid tests when accumulating
     }
-    CRuntimeStatisticCollection(const CRuntimeStatisticCollection & _other) : mapping(_other.mapping)
-#ifdef _DEBUG
-    , ignoreUnknown(_other.ignoreUnknown)
-#endif
-    {
-        unsigned num = mapping.numStatistics();
-        values = new CRuntimeStatistic[num+1];
-        for (unsigned i=0; i <= num; i++)
-            values[i].set(_other.values[i].get());
-    }
+    CRuntimeStatisticCollection(const CRuntimeStatisticCollection & _other);
     virtual ~CRuntimeStatisticCollection();
 
     inline CRuntimeStatistic & queryStatistic(StatisticKind kind)
@@ -909,6 +902,7 @@ extern jlib_decl unsigned __int64 extractTimeCollatable(const char *s, const cha
 
 extern jlib_decl void validateScopeId(const char * idText);
 extern jlib_decl void validateScope(const char * scopeText);
+extern jlib_decl StatisticScopeType getScopeType(const char * scope);
 
 //Scopes need to be processed in a consistent order so they can be merged.
 //activities are in numeric order

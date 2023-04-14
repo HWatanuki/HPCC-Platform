@@ -20,7 +20,7 @@
 ARG BUILD_LABEL
 ARG DOCKER_REPO
 FROM ${DOCKER_REPO}/platform-build:${BUILD_LABEL} as build
-FROM ubuntu:20.04
+FROM ubuntu:22.04
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get clean -y && \
     apt-get autoclean -y && \
@@ -30,27 +30,19 @@ RUN apt-get clean -y && \
 
 RUN apt-get install -y \
   default-jdk \
+  elfutils \
   g++ \
   git \
   git-lfs \
   openssh-client \
-  libapr1 \
-  libaprutil1 \
-  libnuma1 \
-  libboost-regex1.71.0 \
-  libpython3.8 \
-  libmemcached11 \
-  libmemcachedutil2 \
-  libmysqlclient21 \
-  libxslt1.1 \
   locales \
-  python \ 
+  python3 \ 
+  python3-dev \ 
   psmisc \
   r-base-core \
   zip \
-  libarchive13 \
-  libatlas3-base \
-  curl
+  curl \
+  clang
 
 ARG USE_CPPUNIT=1
 RUN if [ ${USE_CPPUNIT} -eq 1 ] ; then apt-get install -y libcppunit-1.15-0 ; fi 

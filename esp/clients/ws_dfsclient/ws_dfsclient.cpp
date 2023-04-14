@@ -574,6 +574,7 @@ IClientWsDfs *getDfsClient(const char *serviceUrl, IUserDescriptor *userDesc)
 }
 
 static CriticalSection localSecretCrit;
+static constexpr unsigned cachedSecretTimeoutSecs = 120; // 2 mins
 static void configureClientSSL(IEspClientRpcSettings &rpc, const char *secretName)
 {
     /*
@@ -593,11 +594,26 @@ static void configureClientSSL(IEspClientRpcSettings &rpc, const char *secretNam
     clientPrivateKeyFilename.append(tempDirStr).append("tls.key");
     caCertFilename.append(tempDirStr).append("ca.crt");
 
+    bool cacheEntryValid = false;
     CriticalBlock b(localSecretCrit);
-    if (!checkDirExists(tempDirStr.str()))
+    Owned<IFile> tempDir = createIFile(tempDirStr);
+    CDateTime timeOutTime, nowTime;
+    bool dirExists = false;
+    if (tempDir->getTime(&timeOutTime, nullptr, nullptr))
     {
-        Owned<IFile> dir = createIFile(tempDirStr.str());
-        dir->createDirectory();
+        dirExists = true;
+        timeOutTime.adjustTimeSecs(cachedSecretTimeoutSecs);
+        nowTime.setNow();
+        if (nowTime.compare(timeOutTime, false) < 0)
+            cacheEntryValid = true;
+    }
+
+    if (!cacheEntryValid)
+    {
+        if (dirExists)
+            verifyex(tempDir->setTime(&nowTime, &nowTime, nullptr));
+        else
+            verifyex(tempDir->createDirectory());
         StringBuffer secretValue;
 
         Owned<IFile> file = createIFile(clientCertFilename);
@@ -790,10 +806,10 @@ IDFSFile *lookupDFSFile(const char *logicalName, AccessMode accessMode, unsigned
         }
 
         if (tm.timedout())
-            throw makeStringExceptionV(0, "DFSFileLookup timed out: file=%s, timeoutSecs=%u", logicalName, timeoutSecs);
+            break;
         Sleep(5000); // sanity sleep
     }
-    return nullptr; // should never be able to reach here, but keeps compiler happy
+    throw makeStringExceptionV(0, "DFSFileLookup timed out: file=%s, timeoutSecs=%u", logicalName, timeoutSecs);
 }
 
 IDistributedFile *createLegacyDFSFile(IDFSFile *dfsFile)

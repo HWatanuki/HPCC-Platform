@@ -115,7 +115,7 @@ void CDiskPartHandlerBase::open()
 {
     unsigned location;
     StringBuffer filePath;
-    if (!(globals->getPropBool("@autoCopyBackup", true)?ensurePrimary(&activity, *partDesc, iFile, location, filePath):getBestFilePart(&activity, *partDesc, iFile, location, filePath, &activity)))
+    if (!(globals->getPropBool("@autoCopyBackup", !isContainerized())?ensurePrimary(&activity, *partDesc, iFile, location, filePath):getBestFilePart(&activity, *partDesc, iFile, location, filePath, &activity)))
     {
         StringBuffer locations;
         IException *e = MakeActivityException(&activity, TE_FileNotFound, "No physical file part for logical file %s, found at given locations: %s (Error = %d)", activity.logicalFilename.get(), getFilePartLocations(*partDesc, locations).str(), GetLastError());
@@ -315,18 +315,23 @@ IThorRowInterfaces * CDiskReadSlaveActivityBase::queryProjectedDiskRowInterfaces
     return projectedDiskRowIf;
 }
 
+
+void CDiskReadSlaveActivityBase::gatherActiveStats(CRuntimeStatisticCollection &activeStats) const
+{
+    PARENT::gatherActiveStats(activeStats);
+    if (partHandler)
+        partHandler->gatherStats(activeStats);
+}
+
 void CDiskReadSlaveActivityBase::serializeStats(MemoryBuffer &mb)
 {
-    CRuntimeStatisticCollection activePartStats(diskReadPartStatistics);
-    if (partHandler)
-    {
-        partHandler->gatherStats(activePartStats);
-        stats.set(activePartStats); // replace disk read stats
-    }
     PARENT::serializeStats(mb);
-    mb.append((unsigned)fileStats.size());
-    for (auto &stats: fileStats)
-        stats->serialize(mb);
+    if (partDescs.ordinality())
+    {
+        mb.append((unsigned)fileStats.size());
+        for (auto &stats: fileStats)
+            stats->serialize(mb);
+    }
 }
 
 
@@ -394,7 +399,7 @@ void CDiskWriteSlaveActivityBase::open()
     Owned<IFileIO> partOutputIO = createMultipleWrite(this, *partDesc, diskRowMinSz, twFlags, compress, ecomp, this, &abortSoon, (external&&!query) ? &tempExternalName : NULL);
 
     {
-        CriticalBlock block(outputCs);
+        CriticalBlock block(statsCs);
         outputIO.setown(partOutputIO.getClear());
     }
 
@@ -468,10 +473,10 @@ void CDiskWriteSlaveActivityBase::close()
 
             Owned<IFileIO> tmpFileIO;
             {
-                CriticalBlock block(outputCs);
+                CriticalBlock block(statsCs);
                 // ensure it is released/destroyed after releasing crit, since the IFileIO might involve a final copy and take considerable time.
                 tmpFileIO.setown(outputIO.getClear());
-                mergeStats(closedPartFileStats, tmpFileIO, diskWriteRemoteStatistics);
+                mergeStats(inactiveStats, tmpFileIO, diskWriteRemoteStatistics);
             }
             tmpFileIO->close(); // NB: close now, do not rely on close in dtor
         }
@@ -498,7 +503,7 @@ void CDiskWriteSlaveActivityBase::close()
 }
 
 CDiskWriteSlaveActivityBase::CDiskWriteSlaveActivityBase(CGraphElementBase *container)
-    : ProcessSlaveActivity(container, diskWriteActivityStatistics), closedPartFileStats(diskWriteRemoteStatistics)
+    : ProcessSlaveActivity(container, diskWriteActivityStatistics)
 {
     diskHelperBase = static_cast <IHThorDiskWriteArg *> (queryHelper());
     grouped = false;
@@ -546,18 +551,14 @@ void CDiskWriteSlaveActivityBase::abort()
         cancelReceiveMsg(queryJobChannel().queryMyRank()-1, mpTag);
 }
 
-void CDiskWriteSlaveActivityBase::serializeStats(MemoryBuffer &mb)
+// NB: always called within statsCs crit
+void CDiskWriteSlaveActivityBase::gatherActiveStats(CRuntimeStatisticCollection &activeStats) const
 {
-    CRuntimeStatisticCollection activeStats(diskWriteRemoteStatistics);
-    {
-        CriticalBlock block(outputCs);
-        activeStats.set(closedPartFileStats);
-        mergeStats(activeStats, outputIO, diskWriteRemoteStatistics);
-    }
-    stats.set(activeStats); // replace disk write stats
-    stats.setStatistic(StPerReplicated, replicateDone);
-    PARENT::serializeStats(mb);
+    PARENT::gatherActiveStats(activeStats);
+    mergeStats(activeStats, outputIO, diskWriteRemoteStatistics);
+    activeStats.setStatistic(StPerReplicated, replicateDone);
 }
+
 
 // ICopyFileProgress
 CFPmode CDiskWriteSlaveActivityBase::onProgress(unsigned __int64 sizeDone, unsigned __int64 totalSize)
@@ -593,7 +594,7 @@ void CDiskWriteSlaveActivityBase::process()
     StringBuffer tmpStr;
     fName.set(getPartFilename(*partDesc, 0, tmpStr).str());
     if (diskHelperBase->getFlags() & TDXtemporary && !container.queryJob().queryUseCheckpoints())
-        container.queryTempHandler()->registerFile(fName, container.queryOwner().queryGraphId(), usageCount, true);
+        tmpUsage = container.queryTempHandler()->registerFile(fName, container.queryOwner().queryGraphId(), usageCount, true);
     try
     {
         ActPrintLog("handling fname : %s", fName.get());
@@ -670,6 +671,8 @@ void CDiskWriteSlaveActivityBase::processDone(MemoryBuffer &mb)
     modifiedTime.getTime(hour, min, sec, nanosec);
     modifiedTime.setTime(hour, min, sec, 0);
     modifiedTime.serialize(mb);
+    if (tmpUsage)
+        tmpUsage->setSize(sz);
 }
 
 /////////////

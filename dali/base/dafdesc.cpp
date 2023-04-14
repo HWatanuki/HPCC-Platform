@@ -32,6 +32,8 @@
 #include "dafdesc.hpp"
 #include "dadfs.hpp"
 #include "dameta.hpp"
+#include "jsecrets.hpp"
+#include "rmtfile.hpp"
 
 #define INCLUDE_1_OF_1    // whether to use 1_of_1 for single part files
 
@@ -389,6 +391,7 @@ struct CClusterInfo: implements IClusterInfo, public CInterface
     Linked<IGroup> group;
     StringAttr name; // group name
     ClusterPartDiskMapSpec mspec;
+    bool foreignGroup = false;
     void checkClusterName(INamedGroupStore *resolver)
     {
         // check name matches group
@@ -460,9 +463,14 @@ public:
             return;
         name.set(pt->queryProp("@name"));
         mspec.fromProp(pt);
+        if (0 != (flags & IFDSF_FOREIGN_GROUP))
+            foreignGroup = true;
+        else if (pt->getPropBool("@foreign"))
+            foreignGroup = true;
+
         if ((((flags&IFDSF_EXCLUDE_GROUPS)==0)||name.isEmpty())&&pt->hasProp("Group"))
             group.setown(createIGroup(pt->queryProp("Group")));
-        if (!name.isEmpty()&&!group.get()&&resolver)
+        if (!name.isEmpty()&&!group.get()&&resolver&&!foreignGroup)
         {
             StringBuffer defaultDir;
             GroupType groupType;
@@ -540,10 +548,13 @@ public:
     void serializeTree(IPropertyTree *pt,unsigned flags)
     {
         mspec.toProp(pt);
-        if (group&&(((flags&IFDSF_EXCLUDE_GROUPS)==0)||name.isEmpty())) {
+        if (group && (foreignGroup || ((flags&IFDSF_EXCLUDE_GROUPS)==0) || name.isEmpty()))
+        {
             StringBuffer gs;
             group->getText(gs);
             pt->setProp("Group",gs.str());
+            if (foreignGroup)
+                pt->setPropBool("@foreign", true);
         }
         if (!name.isEmpty()&&((flags&IFDSF_EXCLUDE_CLUSTERNAMES)==0))
             pt->setProp("@name",name);
@@ -1591,7 +1602,7 @@ public:
             attr->setPropInt64("@size",totalsize);
 
         // NB: for remote useDafilesrv use case
-        IPropertyTree *remoteStoragePlaneMeta = at->queryPropTree("_remoteStoragePlane");
+        IPropertyTree *remoteStoragePlaneMeta = at ? at->queryPropTree("_remoteStoragePlane") : nullptr;
         if (remoteStoragePlaneMeta)
         {
             assertex(1 == clusters.ordinality()); // only one cluster per logical remote file supported/will have resolved to 1
@@ -1785,12 +1796,17 @@ public:
         doSetPart(idx,ep,localname.str(),pt);
     }
 
-    void setTraceName(const char *trc)
+    void setTraceName(const char *trc, bool normalize)
     {
-        CDfsLogicalFileName logicalName;
-        logicalName.setAllowWild(true); // for cases where IFileDescriptor used to point to external files (e.g. during spraying)
-        logicalName.set(trc); // normalize
-        tracename.set(logicalName.get());
+        if (normalize)
+        {
+            CDfsLogicalFileName logicalName;
+            logicalName.setAllowWild(true); // for cases where IFileDescriptor used to point to external files (e.g. during spraying)
+            logicalName.set(trc); // normalize
+            tracename.set(logicalName.get());
+        }
+        else
+            tracename.set(trc);
         if (!queryProperties().hasProp("@lfnHash"))
         {
             lfnHash = getFilenameHash(tracename.length(), tracename.str());
@@ -2138,6 +2154,12 @@ public:
     unsigned querySubFiles()
     {
         UNIMPLEMENTED_X("querySubFiles called from CFileDescriptor!");
+    }
+
+    virtual void setFlags(FileDescriptorFlags flags) override
+    {
+        queryProperties().setPropInt("@flags", static_cast<int>(flags));
+        fileFlags = flags;
     }
 };
 
@@ -3642,7 +3664,40 @@ bool getDefaultSpillPlane(StringBuffer &ret)
 #endif
 }
 
+bool getDefaultIndexBuildStoragePlane(StringBuffer &ret)
+{
+#ifdef _CONTAINERIZED
+    if (getComponentConfigSP()->getProp("@indexBuildPlane", ret))
+        return true;
+    else if (getGlobalConfigSP()->getProp("storage/@indexBuildPlane", ret))
+        return true;
+    else
+        return getDefaultStoragePlane(ret);
+#else
+    return false;
+#endif
+}
+
 //---------------------------------------------------------------------------------------------------------------------
+
+static bool isAccessible(const IPropertyTree * xml)
+{
+    //Unusual to have components specified, so short-cicuit the common case
+    if (!xml->hasProp("components"))
+        return true;
+
+    const char * thisComponentName = queryComponentName();
+    if (!thisComponentName)
+        return false;
+
+    Owned<IPropertyTreeIterator> component = xml->getElements("components");
+    ForEach(*component)
+    {
+        if (strsame(component->query().queryProp(nullptr), thisComponentName))
+            return true;
+    }
+    return false;
+}
 
 class CStoragePlaneAlias : public CInterfaceOf<IStoragePlaneAlias>
 {
@@ -3655,13 +3710,66 @@ public:
             const char *modeStr = modeIter->query().queryProp(nullptr);
             modes |= getAccessModeFromString(modeStr);
         }
+        accessible = ::isAccessible(xml);
     }
     virtual AccessMode queryModes() const override { return modes; }
     virtual const char *queryPrefix() const override { return xml->queryProp("@prefix"); }
+    virtual bool isAccessible() const override { return accessible; }
 
 private:
     Linked<IPropertyTree> xml;
     AccessMode modes = AccessMode::none;
+    bool accessible = false;
+};
+
+class CStorageApiInfo : public CInterfaceOf<IStorageApiInfo>
+{
+public:
+    CStorageApiInfo(IPropertyTree * _xml) : xml(_xml)
+    {
+        if (!xml) // shouldn't happen
+            throw makeStringException(MSGAUD_programmer, -1, "Invalid call: CStorageApiInfo(nullptr)");
+    }
+    virtual const char * getStorageType() const override
+    {
+        return xml->queryProp("@type");
+    }
+    virtual const char * queryStorageApiAccount(unsigned stripeNumber) const override
+    {
+        const char *account = queryContainer(stripeNumber)->queryProp("@account");
+        if (isEmptyString(account))
+            account = xml->queryProp("@account");
+        return account;
+    }
+    virtual const char * queryStorageContainerName(unsigned stripeNumber) const override
+    {
+        return queryContainer(stripeNumber)->queryProp("@name");
+    }
+    virtual StringBuffer & getSASToken(unsigned stripeNumber, StringBuffer & token) const override
+    {
+        const char * secretName = queryContainer(stripeNumber)->queryProp("@secret");
+        if (isEmptyString(secretName))
+        {
+            secretName = xml->queryProp("@secret");
+            if (isEmptyString(secretName))
+                return token.clear();  // return empty string if no secret name is specified
+        }
+        getSecretValue(token, "storage", secretName, "token", false);
+        return token.trimRight();
+    }
+
+private:
+    IPropertyTree * queryContainer(unsigned stripeNumber) const
+    {
+        if (stripeNumber==0) // stripeNumber==0 when not striped -> use first item in 'containers' list
+            stripeNumber++;
+        VStringBuffer path("containers[%u]", stripeNumber);
+        IPropertyTree *container = xml->queryPropTree(path.str());
+        if (!container)
+            throw makeStringExceptionV(-1, "No container provided: path %s", path.str());
+        return container;
+    }
+    Linked<IPropertyTree> xml;
 };
 
 class CStoragePlaneInfo : public CInterfaceOf<IStoragePlane>
@@ -3685,6 +3793,7 @@ public:
     }
     virtual unsigned numDefaultSprayParts() const override { return xml->getPropInt("@defaultSprayParts", 1); }
     virtual bool queryDirPerPart() const override { return xml->getPropBool("@subDirPerFilePart", isContainerized()); } // default to dir. per part in containerized mode
+
     virtual IStoragePlaneAlias *getAliasMatch(AccessMode desiredModes) const override
     {
         if (AccessMode::none == desiredModes)
@@ -3694,6 +3803,10 @@ public:
         IStoragePlaneAlias *bestMatch = nullptr;
         for (const auto & alias : aliases)
         {
+            // Some aliases are only mounted in a restricted set of components (to avoid limits on the number of connections)
+            if (!alias->isAccessible())
+                continue;
+
             AccessMode aliasModes = alias->queryModes();
             unsigned match = static_cast<unsigned>(aliasModes & desiredModes);
             unsigned score = 0;
@@ -3710,6 +3823,19 @@ public:
         }
         return LINK(bestMatch);
     }
+    virtual IStorageApiInfo *getStorageApiInfo()
+    {
+        IPropertyTree *apiInfo = xml->getPropTree("storageapi");
+        if (apiInfo)
+            return new CStorageApiInfo(xml);
+        return nullptr;
+    }
+
+    virtual bool isAccessible() const override
+    {
+        return ::isAccessible(xml);
+    }
+
 private:
     Linked<IPropertyTree> xml;
     std::vector<Owned<IStoragePlaneAlias>> aliases;

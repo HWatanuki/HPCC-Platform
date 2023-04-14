@@ -823,15 +823,14 @@ public:
 class ExprBuilderInfo
 {
 public:
-    ExprBuilderInfo() : type(0), name(NULL), id(NULL), sequence(0) {}
-
     inline void addOperand(exprid_t id) { args.append((unsigned)id); }
 
 public:
-    typeid_t type;
-    IAtom * name;
-    IIdAtom * id;
-    unsigned __int64 sequence;
+    typeid_t type = type_none;
+    IAtom * name = nullptr;
+    IIdAtom * id = nullptr;
+    unsigned __int64 sequence = 0;
+    unsigned __int64 uid = 0;
     IdArray args;
     IdArray special;
     IdArray comment;
@@ -851,6 +850,7 @@ public:
     unsigned line = 0;
     unsigned col = 0;
     IdArray args;
+    unsigned __int64 uid;
 };
 
 
@@ -1371,6 +1371,8 @@ public:
             break;
         }
         line.append("}");
+        if (info.uid && !(options & TIRstripDebugId))
+            line.append(" #").append(info.uid);
         finishDefinition(def);
 
         return def.id;
@@ -1510,7 +1512,8 @@ protected:
                 appendId(info.comment.item(i));
             }
         }
-
+        if (info.uid && !(options & TIRstripDebugId))
+            line.append(" #").append(info.uid);
     }
 
     void appendConstantText(const ConstantBuilderInfo & info)
@@ -1542,6 +1545,8 @@ protected:
         case type_varstring:
         case type_data:
         case type_qstring:
+        case type_utf8:
+        case type_unicode:
             {
                 line.append("D");
                 appendStringAsQuotedCPP(line, info.dataValue.size, (const char *)info.dataValue.data, false);
@@ -2018,6 +2023,7 @@ id_t ExpressionIRPlayer::doProcessExpr(IHqlExpression * expr)
         info.comment.append(processExpr(cur));
     }
 #endif
+    info.uid = querySeqId(expr);
 
     switch (op)
     {
@@ -2088,6 +2094,8 @@ id_t ExpressionIRPlayer::doProcessConstant(IHqlExpression * expr)
     case type_varstring:
     case type_data:
     case type_qstring:
+    case type_utf8:
+    case type_unicode:
         info.dataValue.size = value->getSize();
         info.dataValue.data = value->queryValue();
         break;
@@ -2104,6 +2112,7 @@ id_t ExpressionIRPlayer::doProcessAnnotation(IHqlExpression * expr)
     ExprAnnotationBuilderInfo info;
     Owned<IPropertyTree> javadoc;
     info.expr = processExpr(body);
+    info.uid = querySeqId(expr);
     switch (kind)
     {
     case annotate_symbol:
@@ -2239,6 +2248,18 @@ extern HQL_API void dump_irn(unsigned n, ...)
             reader.play(type);
     }
     va_end(args);
+}
+
+extern HQL_API void dump_ir(IHqlExpression * expr1, IHqlExpression * expr2, IHqlExpression * expr3, IHqlExpression * expr4, IHqlExpression * expr5, IHqlExpression * expr6)
+{
+    FileIRBuilder output(defaultDumpOptions, stdout);
+    ExpressionIRPlayer reader(&output);
+    reader.play(expr1);
+    reader.play(expr2);
+    reader.play(expr3);
+    reader.play(expr4);
+    reader.play(expr5);
+    reader.play(expr6);
 }
 
 //-- Dump the IR for the expression(s)/type to DBGLOG ----------------------------------------------------------------
@@ -2434,7 +2455,7 @@ public:
     {
         OwnedHqlExpr query = parseQuery(testQuery1, NULL);
         StringArray ir;
-        getIRText(ir, 0, query);
+        getIRText(ir, TIRstripDebugId, query);
         compareStringArrays(ir, expectedIR1, __LINE__);
     }
 };

@@ -1,8 +1,11 @@
-﻿import { format as d3Format, Palette } from "@hpcc-js/common";
-import { join } from "@hpcc-js/util";
+﻿import { getTheme } from "@fluentui/react";
+import { format as d3Format, Palette } from "@hpcc-js/common";
+import { Level, join } from "@hpcc-js/util";
 import * as arrayUtil from "dojo/_base/array";
 import * as domConstruct from "dojo/dom-construct";
 import * as entities from "dojox/html/entities";
+import { darkTheme } from "../src-react/themes";
+import nlsHPCC from "src/nlsHPCC";
 
 declare const dojoConfig;
 declare const ActiveXObject;
@@ -108,10 +111,10 @@ export function espTime2SecondsTests() {
 
 export function convertedSize(intsize: number): string {
     const unitConversion = ["Bytes", "KB", "MB", "GB", "TB", "PB", "EB", "ZB", "YB"];
-    if (intsize === null || intsize === undefined) {
+    if (isNaN(intsize) || intsize < 1) {
         return "";
     } else {
-        const x = Math.floor(Math.log(intsize) / Math.log(1024));
+        const x = intsize > 0 ? Math.floor(Math.log(intsize) / Math.log(1024)) : 0;
         return (intsize / Math.pow(1024, x)).toFixed(2) + " " + unitConversion[x];
     }
 }
@@ -675,9 +678,6 @@ export function resolve(hpccWidget, callback) {
         case "MembersWidget":
             require(["hpcc/MembersWidget"], doLoad);
             break;
-        case "MonitoringWidget":
-            require(["hpcc/MonitoringWidget"], doLoad);
-            break;
         case "PackageMapDetailsWidget":
             require(["hpcc/PackageMapDetailsWidget"], doLoad);
             break;
@@ -1046,11 +1046,44 @@ export function downloadText(content: string, fileName: string) {
 
 const d3FormatNum = d3Format(",");
 
-export function formatNum(str): string {
-    if (isNaN(str)) {
-        return str;
+export function parseCookies(): Record<string, any> {
+    const cookies = {};
+    document.cookie.split(";").map(pair => {
+        const [key, ...values] = pair.split("=");
+        cookies[key.trim()] = values.join("=");
+    });
+    return cookies;
+}
+
+export function deleteCookie(name: string) {
+    const expireDate = new Date();
+    expireDate.setSeconds(expireDate.getSeconds() + 1);
+    document.cookie = `${name}=; domain=${window.location.hostname}; path=/; expires=${expireDate.toUTCString()}`;
+}
+
+const d3FormatDecimal = d3Format(",.2f");
+const d3FormatInt = d3Format(",");
+
+export function formatDecimal(num: number): string {
+    if (isNaN(num)) {
+        return num.toString();
     }
-    return d3FormatNum(str);
+    return d3FormatDecimal(num);
+}
+
+export function formatNum(num: number): string {
+    if (isNaN(num)) {
+        return num.toString();
+    }
+    return d3FormatNum(num);
+}
+
+export function safeFormatNum(num: number): string {
+    if (isNaN(num)) {
+        return num.toString();
+    }
+    if (num < 0) return nlsHPCC.NotAvailable;
+    return d3FormatInt(num);
 }
 
 export function formatNums(obj) {
@@ -1090,6 +1123,45 @@ export function format(labelTpl, obj) {
         .map(decodeHtml)
         .join("\n")
         ;
+}
+const theme = getTheme();
+const { semanticColors } = theme;
+
+export function logColor(level: Level): { background: string, foreground: string } {
+    const colors = {
+        background: "transparent",
+        foreground: "inherit"
+    };
+
+    switch (level) {
+        case Level.debug:
+            colors.background = semanticColors.successBackground;
+            colors.foreground = semanticColors.successIcon;
+            break;
+        case Level.info:
+        case Level.notice:
+            break;
+        case Level.warning:
+            colors.background = semanticColors.warningBackground;
+            colors.foreground = semanticColors.warningIcon;
+            break;
+        case Level.error:
+            colors.background = semanticColors.errorBackground;
+            colors.foreground = semanticColors.errorIcon;
+            break;
+        case Level.critical:
+        case Level.alert:
+        case Level.emergency:
+            colors.background = semanticColors.severeWarningBackground;
+            colors.foreground = semanticColors.severeWarningIcon;
+            break;
+    }
+
+    return colors;
+}
+
+export function themeIsDark() {
+    return theme.semanticColors.link === darkTheme.palette.themePrimary;
 }
 
 export function wrapStringWithTag(string, tag = "span") {

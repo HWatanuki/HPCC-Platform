@@ -17,6 +17,7 @@ The user should populate the following values in order to create a new Azure Log
 - LOGANALYTICS_RESOURCE_GROUP (The Azure resource group associated with the target AKS cluster)
  New workspace will be associated with this resource group
 - AKS_CLUSTER_NAME (Name of the target AKS cluster to associate log analytics workspace)
+- AKS_RESOURCE_GROUP (Azure resource group associated with the target AKS cluster)
 - TAGS - The tags associated with the new workspace
      For example: "admin=MyName email=my.email@mycompany.com environment=myenv justification=testing"
 - AZURE_SUBSCRIPTION (Optional - Ensures this subscription is set before creating the new workspace)
@@ -56,10 +57,10 @@ Example manual secret creation command (assuming ./secrets-templates contains a 
 ```
 
 #### c - Configure HPCC logAccess
-The target HPCC deployment should be directed to target the above Azure Log Analytics workspace by providing appropriate logAccess values (such as ./loganalytics-hpcc-logaccess.yaml). The previously created azure-logaccess secret must be declared and associated with the esp category, this can be accomplished via secrets value yaml (such as ./loganalytics-logaccess-secrets.yaml)
+The target HPCC deployment should be directed to use the above Azure Log Analytics workspace, and the newly created secret by providing appropriate logAccess values (such as ./loganalytics-hpcc-logaccess.yaml). 
 
 Example use:
 ```console
-  helm install myhpcc hpcc/hpcc -f HPCC-Platform/helm/examples/azure/log-analytics/loganalytics-hpcc-logaccess.yaml -f  HPCC-Platform/helm/examples/azure/log-analytics/loganalytics-logaccess-secrets.yaml
+  helm install myhpcc hpcc/hpcc -f HPCC-Platform/helm/examples/azure/log-analytics/loganalytics-hpcc-logaccess.yaml
 ```
 

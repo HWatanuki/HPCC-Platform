@@ -70,8 +70,11 @@ static JSocketStatistics *SSTATS;
 #define CHK_ERR(err, s) if((err)==-1){perror(s);exit(1);}
 #define CHK_SSL(err) if((err) ==-1){ERR_print_errors_fp(stderr); exit(2);}
 
-#define THROWSECURESOCKETEXCEPTION(err) \
-    throw MakeStringException(-1, "SecureSocket Exception Raised in: %s, line %d - %s", sanitizeSourceFile(__FILE__), __LINE__, err);
+#define THROWSECURESOCKETEXCEPTION(err, errMsg) \
+    { \
+        VStringBuffer msg("SecureSocket Exception Raised in: %s, line %d - %s", sanitizeSourceFile(__FILE__), __LINE__, errMsg); \
+        throw createJSocketException(err, msg); \
+    }
 
 
 static int pem_passwd_cb(char* buf, int size, int rwflag, void* password)
@@ -652,7 +655,7 @@ int CSecureSocket::secure_accept(int logLevel)
         // which can happen with port scan / VIP ...
         // NOTE: ret could also be SSL_ERROR_ZERO_RETURN if client closed
         // gracefully after ssl neg initiated ...
-        if ( (logLevel >= SSLogNormal) || (ret != SSL_ERROR_SYSCALL) )
+        if ( (logLevel > SSLogNormal) || (ret != SSL_ERROR_SYSCALL) )
         {
             char errbuf[512];
             ERR_error_string_n(ERR_get_error(), errbuf, 512);
@@ -663,8 +666,14 @@ int CSecureSocket::secure_accept(int logLevel)
     else if(err < 0)
     {
         int ret = SSL_get_error(m_ssl, err);
+        unsigned long errnum = ERR_get_error();
+        // Since err < 0 we call ERR_get_error() for additional info
+        // if ret == SSL_ERROR_SYSCALL and ERR_get_error() == 0 then
+        // its most likely a port scan / load balancer check so do not log
+        if ( (logLevel <= SSLogNormal) && (ret == SSL_ERROR_SYSCALL) && (errnum == 0) )
+            return err;
         char errbuf[512];
-        ERR_error_string_n(ERR_get_error(), errbuf, 512);
+        ERR_error_string_n(errnum, errbuf, 512);
         errbuf[511] = '\0';
         DBGLOG("SSL_accept returned %d, SSL_get_error=%d, error - %s", err, ret, errbuf);
         if(strstr(errbuf, "error:1408F455:") != NULL)
@@ -810,10 +819,10 @@ void CSecureSocket::readTimeout(void* buf, size32_t min_size, size32_t max_size,
         if (timeout != WAIT_FOREVER) {
             rc = wait_read(timeleft);
             if (rc < 0) {
-                THROWSECURESOCKETEXCEPTION("wait_read error"); 
+                THROWSECURESOCKETEXCEPTION(SOCKETERRNO(), "wait_read error"); 
             }
             if (rc == 0) {
-                THROWSECURESOCKETEXCEPTION("timeout expired"); 
+                THROWSECURESOCKETEXCEPTION(JSOCKERR_timeout_expired, "timeout expired"); 
             }
             timeleft = socketTimeRemaining(useSeconds, start, timeout);
         }

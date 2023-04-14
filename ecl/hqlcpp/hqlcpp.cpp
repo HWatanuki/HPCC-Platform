@@ -54,6 +54,8 @@
 #include "hqlinline.hpp"
 #include "hqlusage.hpp"
 
+#include <algorithm>
+
 #ifdef _DEBUG
 //#define ADD_ASSIGNMENT_COMMENTS
 //#define ADD_RESOURCE_AS_CPP_COMMENT
@@ -256,6 +258,7 @@ bool isSimpleTranslatedStringExpr(IHqlExpression * expr)
         case no_variable:
         case no_callback:
         case no_select:
+        case no_quoted:
             return true;
         case no_cast:
         case no_implicitcast:
@@ -287,6 +290,7 @@ bool isSimpleTranslatedExpr(IHqlExpression * expr)
     case type_decimal:
     case type_unicode:
     case type_varunicode:
+    case type_utf8:
         //Less strict rules for strings (and decimal), because string temporaries are more expensive.
         return isSimpleTranslatedStringExpr(expr);
     case type_set:
@@ -791,6 +795,58 @@ IHqlExpression * createTranslated(IHqlExpression * expr, IHqlExpression * length
     return createValue(no_translated, expr->getType(), LINK(expr), LINK(length));
 }
 
+static bool canRemoveCast(IHqlExpression * child, ITypeInfo * type)
+{
+    switch (type->getTypeCode())
+    {
+    case type_string:
+    case type_data:
+    case type_unicode:
+    case type_qstring:
+    case type_utf8:
+        break;
+    default:
+        return false;
+    }
+
+    ITypeInfo * childType = child->queryType()->queryPromotedType();
+    if (type->getStringLen() < childType->getStringLen())
+    {
+        if (child->getOperator() == no_if)
+        {
+            return canRemoveCast(child->queryChild(1), type) && canRemoveCast(child->queryChild(2), type);
+        }
+        return false;
+    }
+    type_t tc = type->getTypeCode();
+    if (tc != childType->getTypeCode())
+    {
+        if (tc == type_string)
+        {
+            if (childType->getTypeCode() != type_varstring)
+                return false;
+            if (type->queryCharset() != childType->queryCharset())
+                return false;
+        }
+        else if (tc == type_unicode)
+        {
+            if (childType->getTypeCode() != type_varunicode)
+                return false;
+            if (type->queryLocale() != childType->queryLocale())
+                return false;
+        }
+        else
+            return false;
+    }
+    else
+    {
+        Owned<ITypeInfo> stretched = getStretchedType(type->getStringLen(), childType);
+        if (stretched != type)
+            return false;
+    }
+    return true;
+}
+
 static IHqlExpression * querySimplifyCompareArgCast(IHqlExpression * expr)
 {
     if (expr->isConstant())
@@ -798,47 +854,9 @@ static IHqlExpression * querySimplifyCompareArgCast(IHqlExpression * expr)
     while ((expr->getOperator() == no_implicitcast) || (expr->getOperator() == no_cast))
     {
         ITypeInfo * type = expr->queryType()->queryPromotedType();
-        switch (type->getTypeCode())
-        {
-        case type_string:
-        case type_data:
-        case type_unicode:
-        case type_qstring:
-        case type_utf8:
-            break;
-        default:
-            return expr;
-        }
         IHqlExpression * child = expr->queryChild(0);
-        ITypeInfo * childType = child->queryType()->queryPromotedType();
-        if (type->getStringLen() < childType->getStringLen())
+        if (!canRemoveCast(child, type))
             break;
-        type_t tc = type->getTypeCode();
-        if (tc != childType->getTypeCode())
-        {
-            if (tc == type_string)
-            {
-                if (childType->getTypeCode() != type_varstring)
-                    break;
-                if (type->queryCharset() != childType->queryCharset())
-                    break;
-            }
-            else if (tc == type_unicode)
-            {
-                if (childType->getTypeCode() != type_varunicode)
-                    break;
-                if (type->queryLocale() != childType->queryLocale())
-                    break;
-            }
-            else
-                break;
-        }
-        else
-        {
-            Owned<ITypeInfo> stretched = getStretchedType(type->getStringLen(), childType);
-            if (stretched != type)
-                break;
-        }
         expr = child;
     }
     return expr;
@@ -847,7 +865,17 @@ static IHqlExpression * querySimplifyCompareArgCast(IHqlExpression * expr)
 
 IHqlExpression * getSimplifyCompareArg(IHqlExpression * expr)
 {
-    IHqlExpression * cast = querySimplifyCompareArgCast(expr);
+    IHqlExpression * cast = expr;
+    for (;;)
+    {
+        cast = querySimplifyCompareArgCast(expr);
+        while (isOpRedundantForCompare(cast))
+            cast = cast->queryChild(0);
+        if (cast == expr)
+            break;
+        expr = cast;
+    }
+
     if (cast->getOperator() != no_substring)
         return LINK(cast);
     if (cast->queryChild(0)->queryType()->getTypeCode() == type_qstring)
@@ -1431,6 +1459,22 @@ IHqlCppInstance * createCppInstance(IWorkUnit *wu, const char * wupathname)
 
 //===========================================================================
 
+bool HqlCppOptions::queryTrace(const char * option) const
+{
+    if (option)
+    {
+        //Allow specific options to override traceAll
+        std::string search(option);
+        toLower(search);
+        auto match = traceOptions.find(search);
+        if (match != traceOptions.cend())
+            return match->second;
+    }
+    return traceAll;
+}
+
+//===========================================================================
+
 
 #include "hqlcppsys.ecl"
 
@@ -1872,6 +1916,9 @@ void HqlCppTranslator::cacheOptions()
         DebugOption(options.generateIR, "generateIR", false),
         DebugOption(options.generateIRAfterTransform, "generateIRAfterTransform", false),
         DebugOption(options.irOptions, "irOptions", EclIR::TIRexpandSimpleTypes),
+        DebugOption(options.allowStaticRegex, "allowStaticRegex", true),
+        DebugOption(options.defaultStaticRegex, "defaultStaticRegex", targetRoxie()),   // Roxie queries are loaded once, and shared.  It makes sense to only compile once.
+        DebugOption(options.traceAll, "traceAll", false),
     };
 
     //get options values from workunit
@@ -1891,6 +1938,11 @@ void HqlCppTranslator::cacheOptions()
                 debugOptions[x].setValue(val.str());
                 break;
             }
+        }
+        if ((x == numDebugOptions) && startsWith(name.str(), "trace"))
+        {
+            //Debug value names are always lower-cased - so the entry in the hash table will be lower-case
+            options.traceOptions.emplace(std::string(name.str() + 5), strToBool(val.str()));
         }
     }
 
@@ -1921,17 +1973,7 @@ void HqlCppTranslator::cacheOptions()
     }
 
     code->cppInfo.append(* new CppFileInfo(0));
-    options.targetCompiler = DEFAULT_COMPILER;
-    if (wu()->hasDebugValue("targetGcc"))
-        options.targetCompiler = wu()->getDebugValueBool("targetGcc", false) ? GccCppCompiler : Vs6CppCompiler;
-
-    SCMStringBuffer compilerText;
-    wu()->getDebugValue("targetCompiler", compilerText);
-    for (CompilerType iComp = (CompilerType)0; iComp < MaxCompiler; iComp = (CompilerType)(iComp+1))
-    {
-        if (stricmp(compilerText.s.str(), compilerTypeText[iComp]) == 0)
-            options.targetCompiler = iComp;
-    }
+    options.targetCompiler = queryCompilerType(wu(), DEFAULT_COMPILER);
 
     if (getDebugFlag("optimizeProjects", true))
     {
@@ -3026,6 +3068,16 @@ IHqlStmt * HqlCppTranslator::buildFilterViaExpr(BuildCtx & ctx, IHqlExpression *
     }
 }
 
+IHqlStmt * HqlCppTranslator::buildFilterViaSimpleExpr(BuildCtx & ctx, IHqlExpression * expr)
+{
+    CHqlBoundExpr pure;
+    buildSimpleExpr(ctx, expr, pure);
+    assertex(!pure.length && !pure.count);
+    IHqlStmt * stmt =  ctx.addFilter(pure.expr);
+    ctx.associateExpr(expr, queryBoolExpr(true));
+    return stmt;
+}
+
 void HqlCppTranslator::tidyupExpr(BuildCtx & ctx, CHqlBoundExpr & bound)
 {
     if (isPushed(bound))
@@ -3963,6 +4015,9 @@ void HqlCppTranslator::buildStmt(BuildCtx & _ctx, IHqlExpression * expr)
     case no_childquery:
         buildChildGraph(ctx, expr);
         return;
+    case no_executewhen:
+        doBuildStmtExecuteWhen(ctx, expr);
+        return;
     case no_evaluate_stmt:
         expr = expr->queryChild(0);
         if (expr->queryValue())
@@ -4397,6 +4452,13 @@ void HqlCppTranslator::buildSimpleExpr(BuildCtx & ctx, IHqlExpression * expr, CH
                 break;
             }
         }
+        break;
+    case no_matchtext:
+    case no_matchunicode:
+    case no_matchutf8:
+        if (!queryRealChild(expr, 0) && ctx.queryMatchExpr(activeValidateMarkerExpr))
+            simple = true;
+        break;
     }
 
     if (simple)
@@ -5486,9 +5548,19 @@ void HqlCppTranslator::doBuildAssignIn(BuildCtx & ctx, const CHqlBoundTarget & t
         break;
     case no_list:
         {
-            HqlCppCaseInfo info(*this);
-            doBuildInCaseInfo(expr, info, values);
-            info.buildAssign(ctx, target);
+            //The code currently generated for decimal IN does not work - because it does not force the
+            //argument into a temporary.  See HPCC-28291
+            IHqlExpression * searchExpr = expr->queryChild(0);
+            if (!isDecimalType(searchExpr->queryType()))
+            {
+                HqlCppCaseInfo info(*this);
+                doBuildInCaseInfo(expr, info, values);
+                info.buildAssign(ctx, target);
+            }
+            else
+            {
+                doBuildAssignInStored(ctx, target, expr);
+            }
             break;
         }
     case no_createset:
@@ -6765,6 +6837,54 @@ void HqlCppTranslator::doBuildExprCast(BuildCtx & ctx, IHqlExpression * expr, CH
         }
     }
 
+    if (expr->isPure() && ctx.getMatchExpr(expr, tgt))
+        return;
+
+    //A few casts have to go via an intermediate type.  Special case them here to make it more likely that the arguments
+    //will be commoned up.  since (cast)translated will not match (cast)original
+    ITypeInfo * argType = arg->queryType();
+    Owned<ITypeInfo> intermediateType;
+    switch (exprType->getTypeCode())
+    {
+    case type_swapint:
+        {
+            if (exprType == argType)
+                break;
+            if (argType->getTypeCode() != type_int)
+                intermediateType.setown(makeIntType(exprType->getSize(), exprType->isSigned()));
+            break;
+        }
+        case type_int:
+        {
+            switch (argType->getTypeCode())
+            {
+            case type_qstring:
+                //Even better would be to implement qString->int function
+                intermediateType.setown(makeStringType(argType->getStringLen(), NULL, NULL));
+                break;
+            }
+            break;
+        }
+        case type_real:
+        {
+            switch (argType->getTypeCode())
+            {
+            case type_swapint:
+                intermediateType.setown(makeIntType(argType->getSize(), argType->isSigned()));
+                break;
+            }
+            break;
+        }
+    }
+
+    if (intermediateType)
+    {
+        OwnedHqlExpr intermediate = createValue(no_implicitcast, intermediateType.getClear(), LINK(arg));
+        OwnedHqlExpr recast = createValue(no_implicitcast, LINK(exprType), intermediate.getClear());
+        buildExpr(ctx, recast, tgt);
+        return;
+    }
+
     CHqlBoundExpr pure;
     buildExpr(ctx, arg, pure);
 
@@ -7516,6 +7636,34 @@ void HqlCppTranslator::doBuildAssignExecuteWhen(BuildCtx & ctx, const CHqlBoundT
     }
 }
 
+void HqlCppTranslator::doBuildStmtExecuteWhen(BuildCtx & ctx, IHqlExpression * expr)
+{
+    IHqlExpression * value = expr->queryChild(0);
+    IHqlExpression * action = expr->queryChild(1);
+
+    if (expr->hasAttribute(beforeAtom))
+    {
+        buildStmt(ctx, action);
+        buildStmt(ctx, value);
+    }
+    else if (expr->hasAttribute(failureAtom))
+    {
+        BuildCtx tryctx(ctx);
+        tryctx.addTry();
+        buildStmt(tryctx, value);
+
+        BuildCtx catchctx(ctx);
+        catchctx.addCatch(NULL);
+        buildStmt(catchctx, action);
+        catchctx.addThrow(NULL);
+    }
+    else
+    {
+        buildStmt(ctx, value);
+        buildStmt(ctx, action);
+    }
+}
+
 void HqlCppTranslator::doBuildExprPow(BuildCtx & ctx, IHqlExpression * expr, CHqlBoundExpr & tgt)
 {
     assertex(expr->numChildren() == 2);
@@ -7724,36 +7872,59 @@ void HqlCppTranslator::doBuildAssignIf(BuildCtx & ctx, const CHqlBoundTarget & t
         return;
     }
 
+    IHqlExpression * condExpr = expr->queryChild(0);
     IHqlExpression * trueExpr = expr->queryChild(1);
     IHqlExpression * falseExpr = expr->queryChild(2);
 
-    BuildCtx subctx(ctx);
-    CHqlBoundExpr cond;
-    buildCachedExpr(subctx, expr->queryChild(0), cond);
+    HqlExprAssociation * boundCond = ctx.queryMatchExpr(condExpr);
+    if (boundCond && boundCond->queryExpr()->queryValue())
+    {
+        if (matchesConstValue(boundCond->queryExpr(), true))
+            buildExprAssign(ctx, target, trueExpr);
+        else
+            buildExprAssign(ctx, target, falseExpr);
+        return;
+    }
 
-    IHqlStmt * test = subctx.addFilter(cond.expr);
+    BuildCtx subctx(ctx);
+    IHqlStmt * test = buildFilterViaExpr(subctx, condExpr);
     buildExprAssign(subctx, target, trueExpr);
 
     subctx.selectElse(test);
+    subctx.associateExpr(condExpr, queryBoolExpr(false));
     buildExprAssign(subctx, target, falseExpr);
 }
 
 void HqlCppTranslator::doBuildExprIf(BuildCtx & ctx, IHqlExpression * expr, CHqlBoundExpr & tgt)
 {
+    IHqlExpression * condExpr = expr->queryChild(0);
+    IHqlExpression * trueExpr = expr->queryChild(1);
+    IHqlExpression * falseExpr = expr->queryChild(2);
+
+    HqlExprAssociation * boundCond = ctx.queryMatchExpr(condExpr);
+    if (boundCond && boundCond->queryExpr()->queryValue())
+    {
+        if (expr->isPure() && ctx.getMatchExpr(expr, tgt))
+            return;
+
+        if (matchesConstValue(boundCond->queryExpr(), true))
+            buildExpr(ctx, trueExpr, tgt);
+        else
+            buildExpr(ctx, falseExpr, tgt);
+        return;
+    }
+
     if (ifRequiresAssignment(ctx, expr))
     {
         buildTempExpr(ctx, expr, tgt);
         return;
     }
 
-    IHqlExpression * trueExpr = expr->queryChild(1);
-    IHqlExpression * falseExpr = expr->queryChild(2);
-
     //Length should not be conditional...
     CHqlBoundExpr cond;
     CHqlBoundExpr boundTrue;
     CHqlBoundExpr boundFalse;
-    buildCachedExpr(ctx, expr->queryChild(0), cond);
+    buildCachedExpr(ctx, condExpr, cond);
     buildCachedExpr(ctx, trueExpr, boundTrue);
     buildCachedExpr(ctx, falseExpr, boundFalse);
     //true and false should have same type...
@@ -7767,18 +7938,29 @@ void HqlCppTranslator::doBuildStmtIf(BuildCtx & ctx, IHqlExpression * expr)
     if (converted)
         return buildStmt(ctx, converted);
 
+    IHqlExpression * condExpr = expr->queryChild(0);
+    IHqlExpression * trueExpr = expr->queryChild(1);
+    IHqlExpression * falseExpr = expr->queryChild(2);
+
+    HqlExprAssociation * boundCond = ctx.queryMatchExpr(condExpr);
+    if (boundCond && boundCond->queryExpr()->queryValue())
+    {
+        if (matchesConstValue(boundCond->queryExpr(), true))
+            buildStmt(ctx, trueExpr);
+        else
+            buildStmt(ctx, falseExpr);
+        return;
+    }
+
     BuildCtx subctx(ctx);
-    CHqlBoundExpr cond;
-    buildCachedExpr(subctx, expr->queryChild(0), cond);
+    IHqlStmt * test = buildFilterViaExpr(subctx, condExpr);
+    optimizeBuildActionList(subctx, trueExpr);
 
-    IHqlStmt * test = subctx.addFilter(cond.expr);
-    optimizeBuildActionList(subctx, expr->queryChild(1));
-
-    IHqlExpression * elseExpr = queryRealChild(expr, 2);
-    if (elseExpr && elseExpr->getOperator() != no_null)
+    if (falseExpr && falseExpr->getOperator() != no_null)
     {
         subctx.selectElse(test);
-        optimizeBuildActionList(subctx, elseExpr);
+        subctx.associateExpr(condExpr, queryBoolExpr(false));
+        optimizeBuildActionList(subctx, falseExpr);
     }
 }
 
@@ -12147,12 +12329,14 @@ void HqlCppTranslator::buildCppFunctionDefinition(BuildCtx & ctx, IHqlExpression
                 "#endif\n");
     }
 
-    MemberFunction userFunc(*this, ctx, proto, MFdynamicproto);
-    if (location)
-        userFunc.ctx.addLine(locationFilename, startLine);
-    userFunc.ctx.addQuoted(body);
-    if (location)
-        userFunc.ctx.addLine();
+    {
+        MemberFunction userFunc(*this, ctx, proto, MFdynamicproto);
+        if (location)
+            userFunc.ctx.addLine(locationFilename, startLine);
+        userFunc.ctx.addQuoted(body);
+        if (location)
+            userFunc.ctx.addLine();
+    }
 
     if (addPragmas)
     {
@@ -12462,70 +12646,88 @@ void HqlCppTranslator::buildScriptFunctionDefinition(BuildCtx &ctx, IHqlExpressi
 
 void HqlCppTranslator::buildFunctionDefinition(IHqlExpression * funcdef)
 {
-    IHqlExpression * outofline = funcdef->queryChild(0);
-    assertex(outofline->getOperator() == no_outofline);
-    IHqlExpression * bodyCode = outofline->queryChild(0);
-
-    StringBuffer proto;
-    BuildCtx funcctx(*code, helperAtom);
-    if (options.spanMultipleCpp)
+    try
     {
-        const bool inChildActivity = true;  // assume the worst
-        OwnedHqlExpr pass = getSizetConstant(beginFunctionGetCppIndex(0, inChildActivity));
-        funcctx.addGroupPass(pass);
-    }
-    expandFunctionPrototype(proto, funcdef);
+        IHqlExpression * outofline = funcdef->queryChild(0);
+        assertex(outofline->getOperator() == no_outofline);
+        IHqlExpression * bodyCode = outofline->queryChild(0);
 
-    if (bodyCode->getOperator() == no_embedbody)
-    {
-        if (bodyCode->hasAttribute(_disallowed_Atom))
-            throwError(HQLERR_EmbeddedCppNotAllowed);
-
-        IHqlExpression *languageAttr = bodyCode->queryAttribute(languageAtom);
-        if (languageAttr)
+        StringBuffer proto;
+        BuildCtx funcctx(*code, helperAtom);
+        if (options.spanMultipleCpp)
         {
-            buildScriptFunctionDefinition(funcctx, funcdef, proto);
+            const bool inChildActivity = true;  // assume the worst
+            OwnedHqlExpr pass = getSizetConstant(beginFunctionGetCppIndex(0, inChildActivity));
+            funcctx.addGroupPass(pass);
         }
-        else
+        expandFunctionPrototype(proto, funcdef);
+
+        if (bodyCode->getOperator() == no_embedbody)
         {
-            bool isInline = bodyCode->hasAttribute(inlineAtom);
-            if (isInline)
+            if (bodyCode->hasAttribute(_disallowed_Atom))
+                throwError(HQLERR_EmbeddedCppNotAllowed);
+
+            IHqlExpression *languageAttr = bodyCode->queryAttribute(languageAtom);
+            if (languageAttr)
             {
-                if (options.spanMultipleCpp)
-                {
-                    BuildCtx funcctx2(*code, parentHelpersAtom);
-                    buildCppFunctionDefinition(funcctx2, bodyCode, proto);
-                }
-                else
-                    buildCppFunctionDefinition(funcctx, bodyCode, proto);
+                buildScriptFunctionDefinition(funcctx, funcdef, proto);
             }
             else
             {
-                BuildCtx funcctx2(*code, userFunctionAtom);
-                if (options.spanMultipleCpp)
+                bool isInline = bodyCode->hasAttribute(inlineAtom);
+                if (isInline)
                 {
-                    OwnedHqlExpr pass = getSizetConstant(beginFunctionGetCppIndex(0, false));
-                    funcctx2.addGroupPass(pass);
+                    if (options.spanMultipleCpp)
+                    {
+                        BuildCtx funcctx2(*code, parentHelpersAtom);
+                        buildCppFunctionDefinition(funcctx2, bodyCode, proto);
+                    }
+                    else
+                        buildCppFunctionDefinition(funcctx, bodyCode, proto);
                 }
-                buildCppFunctionDefinition(funcctx2, bodyCode, proto);
+                else
+                {
+                    BuildCtx funcctx2(*code, userFunctionAtom);
+                    if (options.spanMultipleCpp)
+                    {
+                        OwnedHqlExpr pass = getSizetConstant(beginFunctionGetCppIndex(0, false));
+                        funcctx2.addGroupPass(pass);
+                    }
+                    buildCppFunctionDefinition(funcctx2, bodyCode, proto);
+                }
             }
         }
-    }
-    else
-    {
-        MemberFunction func(*this, funcctx, proto, MFdynamicproto);
-
-        //MORE: Need to work out how to handle functions that require the context.
-        //Need to create a class instead.
-        if (functionBodyUsesContext(outofline))
+        else
         {
-            func.ctx.associateExpr(codeContextMarkerExpr, codeContextMarkerExpr);
-            func.ctx.associateExpr(globalContextMarkerExpr, globalContextMarkerExpr);
+            MemberFunction func(*this, funcctx, proto, MFdynamicproto);
+
+            //MORE: Need to work out how to handle functions that require the context.
+            //Need to create a class instead.
+            if (functionBodyUsesContext(outofline))
+            {
+                func.ctx.associateExpr(codeContextMarkerExpr, codeContextMarkerExpr);
+                func.ctx.associateExpr(globalContextMarkerExpr, globalContextMarkerExpr);
+            }
+            OwnedHqlExpr newCode = replaceInlineParameters(funcdef, bodyCode);
+            newCode.setown(foldHqlExpression(newCode));
+            ITypeInfo * returnType = funcdef->queryType()->queryChildType();
+            doBuildUserFunctionReturn(func.ctx, returnType, newCode);
         }
-        OwnedHqlExpr newCode = replaceInlineParameters(funcdef, bodyCode);
-        newCode.setown(foldHqlExpression(newCode));
-        ITypeInfo * returnType = funcdef->queryType()->queryChildType();
-        doBuildUserFunctionReturn(func.ctx, returnType, newCode);
+    }
+    catch (IError *)
+    {
+        throw;
+    }
+    catch (IException * e)
+    {
+        IIdAtom * id = funcdef->queryId();
+        if (!id)
+            throw;
+
+        Owned<IException> cleanupE(e);
+        StringBuffer msg;
+        e->errorMessage(msg);
+        throw makeStringExceptionV(e->errorCode(), "%s in function %s", msg.str(), str(id));
     }
 }
 

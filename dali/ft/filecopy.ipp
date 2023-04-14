@@ -62,7 +62,7 @@ public:
     void logIfRunning(StringBuffer &list);
     void setErrorOwn(IException * e);
     void prepareCmd(MemoryBuffer &mb, unsigned version);
-    bool launchFtSlaveCmd(const SocketEndpoint &_ep);
+    bool launchFtSlaveCmd();
 
     virtual int run();
     virtual bool abortRequested() { return isAborting(); }
@@ -82,6 +82,7 @@ protected:
 protected:
     FileSprayer &               sprayer;
     SocketEndpoint              ep;
+    StringBuffer                url;
     PartitionPointArray         partition;
     OutputProgressArray         progress;
     Semaphore *                 sem;
@@ -101,8 +102,8 @@ typedef IArrayOf<FileTransferThread> TransferArray;
 struct FilePartInfo : public CInterface
 {
 public:
-    FilePartInfo(const RemoteFilename & _filename);
-    FilePartInfo();
+    FilePartInfo(const RemoteFilename & _filename, unsigned _partNum);
+    FilePartInfo(unsigned _partNum);
 
     bool canPush();
     void extractExtra(IPartDescriptor &part);
@@ -124,6 +125,7 @@ public:
     unsigned                crc;
     CDateTime               modifiedTime;
     bool                    hasCRC;
+    unsigned                partNum = 0;
 };
 
 typedef CIArrayOf<FilePartInfo> FilePartInfoArray;
@@ -135,7 +137,7 @@ class DALIFT_API TargetLocation : public CInterface
 {
 public:
     TargetLocation() { }
-    TargetLocation(RemoteFilename & _filename) : filename(_filename) { }
+    TargetLocation(RemoteFilename & _filename, unsigned _partNum) : filename(_filename), partNum(_partNum) { }
 
     bool                canPull();
     const IpAddress &   queryIP()           { return filename.queryIP(); }
@@ -143,6 +145,7 @@ public:
 public:
     RemoteFilename      filename;
     CDateTime           modifiedTime;
+    unsigned            partNum = 0;
 };
 typedef CIArrayOf<TargetLocation> TargetLocationArray;
 
@@ -204,13 +207,13 @@ public:
     virtual void spray();
 
     void updateProgress(const OutputProgress & newProgress);
-    unsigned numParallelSlaves();
-    void setError(const SocketEndpoint & ep, IException * e);
+    void setError(const char *host, IException * e);
     bool canLocateSlaveForNode(const IpAddress &ip) const;
     void checkSourceTarget(IFileDescriptor * file);
     void setOperation(dfu_operation op);
     dfu_operation getOperation() const;
     const char * getOperationTypeString() const;
+    IPropertyTree *getSprayService() const;
 
 protected:
     void addEmptyFilesToPartition(unsigned from, unsigned to);
@@ -227,6 +230,7 @@ protected:
     bool calcCRC();
     bool calcInputCRC();
     unsigned __int64 calcSizeReadAlready();
+    void calcNumConcurrentTransfers();
     void calculateOne2OnePartition();
     void calculateMany2OnePartition();
     void calculateNoSplitPartition();
@@ -255,11 +259,12 @@ protected:
     void locateJsonHeader(IFileIO * io, unsigned headerSize, offset_t & headerLength, offset_t & footerLength);
     void locateContentHeader(IFileIO * io, unsigned headerSize, offset_t & headerLength, offset_t & footerLength);
     bool needToCalcOutput();
-    unsigned numParallelConnections(unsigned limit);
+    unsigned numPartitionThreads(unsigned limit);
     void performTransfer();
     void pullParts();
     void pushWholeParts();
     void pushParts();
+    void transferUsingAPI(IAPICopyClient * copyClient);
     const char * queryFixedSlave() const;
     const char * querySlaveExecutable(const IpAddress &ip, StringBuffer &ret) const;
     const char * querySplitPrefix();
@@ -271,6 +276,7 @@ protected:
     bool usePullOperation() const;
     bool usePushOperation() const;
     bool usePushWholeOperation() const;
+    IAPICopyClient * getAPICopyClient();
     void updateSizeRead();
     void waitForTransferSem(Semaphore & sem);
     void addPrefix(size32_t len, const void * data, unsigned idx, PartitionPointArray & partitionWork);
@@ -297,8 +303,6 @@ private:
     // Get and store Remote File Name parts into the History record
     void splitAndCollectFileInfo(IPropertyTree * newRecord, RemoteFilename &remoteFileName,
                                  bool isDistributedSource = true);
-
-
 protected:
     CIArrayOf<FilePartInfo> sources;
     Linked<IDistributedFile> distributedTarget;
@@ -361,7 +365,10 @@ protected:
     dfu_operation           operation = dfu_unknown;
     CAbortRequestCallback   fileSprayerAbortChecker;
     unsigned slaveUpdateFrequency = minSlaveUpdateFrequency;
+    unsigned                numConcurrentTransfers = 0;
     StringAttr              sprayServiceName;
+    StringBuffer            sprayServiceHost;
+    Owned<IPropertyTree>    sprayServiceConfig;
 };
 
 

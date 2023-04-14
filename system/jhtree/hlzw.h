@@ -24,28 +24,37 @@ typedef unsigned short KEYRECSIZE_T;
 #include "jlzw.hpp"
 #define USE_RANDROWDIFF true
 
-class KeyCompressor 
+class KeyCompressor final
 {
 public:
     KeyCompressor() {}
     ~KeyCompressor();
     void open(void *blk,int blksize, bool isVariable, bool rowcompression);
-    void openBlob(void *blk,int blksize);
+    void open(void *blk,int blksize,bool _isVariable, ICompressHandler * compressionHandler);
+
     int writekey(offset_t fPtr,const char *key,unsigned datalength, unsigned __int64 sequence);
+    bool write(const char * data, size32_t datalength);
+
+    void openBlob(void *blk,int blksize);
     unsigned writeBlob(const char *data, unsigned datalength);
-    void *bufptr() { return (comp==NULL)?bufp:comp->bufptr();}
-    int buflen() { return (comp==NULL)?bufl:comp->buflen();}
-    virtual void close();
-    unsigned getCurrentOffset() { return (curOffset+0xf) & 0xfffffff0; }
+    void close();
+    bool adjustLimit(size32_t newLimit);
+
+    unsigned getCurrentOffset() const { return (curOffset+0xf) & 0xfffffff0; }
+    void *bufptr() const { return (comp==NULL)?bufp:comp->bufptr();}
+    int buflen() const { return (comp==NULL)?bufl:comp->buflen();}
+    CompressionMethod getCompressionMethod() const { return method; }
+
 protected:
+    ICompressor *comp = nullptr;
+    void *bufp = nullptr;
+    unsigned curOffset = 0;
+    int bufl = 0;
     bool isVariable = false;
     bool isBlob = false;
-    unsigned curOffset = 0;
-    void *bufp = nullptr;
-    int bufl = 0;
+    CompressionMethod method = COMPRESS_METHOD_NONE;
+
     void testwrite(const void *p,size32_t s);
-    ICompressor *comp = nullptr;
 };
 
 #endif
-

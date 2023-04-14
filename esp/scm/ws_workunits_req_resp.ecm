@@ -896,19 +896,24 @@ ESPrequest [nil_remove] WUGetZAPInfoRequest
 ESPresponse [exceptions_inline] WUGetZAPInfoResponse
 {
     string WUID;
-    string ESPIPAddress;
-    string ThorIPAddress;
+    [depr_ver("1.95")] string ESPIPAddress;
+    [min_ver("1.95")] string ESPApplication;
+    [depr_ver("1.95")] string ThorIPAddress;
+    [min_ver("1.95")] string ThorProcesses;
     string BuildVersion;
     string Archive;
     [min_ver("1.73")] string EmailTo;
     [min_ver("1.73")] string EmailFrom;
+    [min_ver("1.96")] string Message;
 };
 
 ESPrequest [nil_remove] WUCreateZAPInfoRequest
 {
     string Wuid;
-    string ESPIPAddress;
-    string ThorIPAddress;
+    [depr_ver("1.95")] string ESPIPAddress;
+    [min_ver("1.95")] string ESPApplication;
+    [depr_ver("1.95")] string ThorIPAddress;
+    [min_ver("1.95")] string ThorProcesses;
     string BuildVersion;
     string ProblemDescription;
     string WhatChanged;
@@ -1046,6 +1051,8 @@ ESPResponse [exceptions_inline] WUDetailsMetaResponse
     ESParray<ESPStruct WUDetailsActivityInfo, Activity> Activities;
 };
 
+// ----------------------------------------------------------------------------------
+
 ESPrequest [nil_remove] WUEclDefinitionActionRequest
 {
     ESParray<string> EclDefinitions;
@@ -1084,6 +1091,8 @@ ESPresponse [exceptions_inline] WUEclDefinitionActionResponse
     [min_ver("1.89")] string DfuPublisherState;
 };
 
+// ----------------------------------------------------------------------------------
+
 ESPrequest [nil_remove] WUGetPluginsRequest
 {
 };
@@ -1092,4 +1101,27 @@ ESPresponse [exceptions_inline] WUGetPluginsResponse
 {
     ESParray<ESPstruct WUEclPluginsInFolder> Plugins;
 };
+
+// ----------------------------------------------------------------------------------
+
+ESPrequest [nil_remove] WUAnalyseHotspotRequest
+{
+    string Wuid;
+    [optional] string RootScope;
+    bool OptOnlyActive(false);
+    bool OnlyCriticalPath(false);
+    bool IncludeProperties(true);
+    bool IncludeStatistics(true);
+    double ThresholdPercent(1.0);
+    [optional] ESPstruct WUPropertyOptions PropertyOptions;       // Which attribute details are returned
+};
+
+ESPresponse [exceptions_inline] WUAnalyseHotspotResponse
+{
+    string RootScope;
+    int64 RootTime;
+    ESParray<ESPstruct WUResponseScope, Activity> Activities;
+    ESParray<ESPstruct WUResponseScope, Dependency> Dependencies;
+};
+
 // ----------------------------------------------------------------------------------

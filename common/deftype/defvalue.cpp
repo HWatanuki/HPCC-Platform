@@ -1485,6 +1485,7 @@ const char *CharValue::generateCPP(StringBuffer &out, CompilerType compiler)
         case '\r': out.append("'\\r'"); break;
         case '\t': out.append("'\\t'"); break;
         case '\'': out.append("'\\''"); break;
+        case '\\': out.append("'\\\\'"); break;
         default:
             if ((val >= ' ') && (val <= 126))
                 out.append('\'').append(val).append('\'');
@@ -1694,6 +1695,7 @@ static void generateUnsignedCPP(StringBuffer &s, __uint64 val, unsigned size, Co
     switch (compiler)
     {
     case GccCppCompiler:
+    case ClangCppCompiler:
         if (val && (size > sizeof(unsigned)))
             s.append("LLU");
         else
@@ -1722,6 +1724,7 @@ static void generateSignedCPP(StringBuffer &s, __int64 val, unsigned size, Compi
             switch (compiler)
             {
             case GccCppCompiler:
+            case ClangCppCompiler:
                 s.append("LL");
                 break;
             case Vs6CppCompiler:

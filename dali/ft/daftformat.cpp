@@ -1884,6 +1884,7 @@ void CRemotePartitioner::prepareCmd(MemoryBuffer &msg)
 
 void CRemotePartitioner::callRemote()
 {
+    HANDLE localFtSlaveHandle = 0; // used only if ftslave is launched on this host
     try
     {
         LogMsgJobInfo job(unknownJob);
@@ -1900,8 +1901,8 @@ void CRemotePartitioner::callRemote()
 
         if (sprayer.useFtSlave)
         {
-            StringBuffer tmp;
-            socket.setown(spawnRemoteChild(SPAWNdfu, slave, connectEP, DAFT_VERSION, queryFtSlaveLogDir(), nullptr, wuid));
+            // NB: In containerized mode, spawnRemoteChild will launch ftslave's locally and set connectEP to localhost
+            socket.setown(spawnRemoteChild(SPAWNdfu, slave, connectEP, DAFT_VERSION, queryFtSlaveLogDir(), nullptr, wuid, &localFtSlaveHandle));
             if (!socket)
                 throwError1(DFTERR_FailedStartSlave, url.str());
 
@@ -1911,10 +1912,19 @@ void CRemotePartitioner::callRemote()
         }
         else
         {
-            setDafsEndpointPort(connectEP);
-            if (connectEP.isNull())
-                throwError1(DFTERR_FailedStartSlave, url.str());
-            socket.setown(connectDafs(connectEP, 5000));
+            Owned<IPropertyTree> serviceTree;
+            if (isContainerized())
+            {
+                serviceTree.setown(sprayer.getSprayService());
+                connectEP.set(serviceTree->queryProp("@name"), serviceTree->getPropInt("@port"));
+            }
+            else
+            {
+                setDafsEndpointPort(connectEP);
+                if (connectEP.isNull())
+                    throwError1(DFTERR_FailedStartSlave, url.str());
+            }
+            socket.setown(connectDafs(connectEP, 60000, serviceTree));
             if (!socket)
                 throwError1(DFTERR_FailedStartSlave, url.str());
             prepareCmd(msg);
@@ -1952,6 +1962,13 @@ void CRemotePartitioner::callRemote()
 
     if (sem)
         sem->signal();
+
+    if (localFtSlaveHandle)
+    {
+        DWORD runcode;
+        if (!wait_program_timeout(localFtSlaveHandle, runcode, 5000))
+            WARNLOG("CRemotePartitioner::callRemote - Timed out waiting for local FtSlave process to exit");
+    }
 }
 
 

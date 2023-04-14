@@ -25,9 +25,224 @@
 #include "rtlformat.hpp"
 #include "jsecrets.hpp"
 #include "esdl_script.hpp"
+#include "txsummary.hpp"
 
 #include <fxpp/FragmentedXmlPullParser.hpp>
 using namespace xpp;
+
+class EsdlScriptMaskerScope
+{
+private:
+    IEsdlScriptContext* scriptContext = nullptr;
+public:
+    EsdlScriptMaskerScope(IEsdlScriptContext* _scriptContext)
+        : scriptContext(_scriptContext)
+    {
+        if (scriptContext)
+            scriptContext->pushMaskerScope();
+        else
+            throw makeStringException(-1, "EsdlScriptMaskerScope failure - missing context");
+    }
+    ~EsdlScriptMaskerScope()
+    {
+        scriptContext->popMaskerScope();
+    }
+};
+
+class EsdlScriptTraceOptionsScope
+{
+private:
+    IEsdlScriptContext* scriptContext = nullptr;
+public:
+    EsdlScriptTraceOptionsScope(IEsdlScriptContext* _scriptContext)
+        : scriptContext(_scriptContext)
+    {
+        if (scriptContext)
+            scriptContext->pushTraceOptionsScope();
+        else
+            throw makeStringException(-1, "EsdlScriptTraceOptionsScope failure - missing context");
+    }
+    ~EsdlScriptTraceOptionsScope()
+    {
+         scriptContext->popTraceOptionsScope();
+    }
+};
+
+class CEsdlScriptContext : public CInterfaceOf<IEsdlScriptContext>
+{
+public: // ISectionalXmlDocModel
+    virtual IXpathContext* createXpathContext(IXpathContext* parent, const char* section, bool strictParameterDeclaration) override { return docModel->createXpathContext(parent, section, strictParameterDeclaration); }
+    virtual IXpathContext* getCopiedSectionXpathContext(IXpathContext* parent, const char* tgtSection, const char* srcSection, bool strictParameterDeclaration) override { return docModel->getCopiedSectionXpathContext(parent, tgtSection, srcSection, strictParameterDeclaration); }
+    virtual void setContent(const char* section, const char* xml) override { docModel->setContent(section, xml); }
+    virtual void appendContent(const char* section, const char* name, const char* xml) override { docModel->appendContent(section, name, xml); }
+    virtual void setContent(const char* section, IPropertyTree* tree) override { docModel->setContent(section, tree); }
+    virtual bool tokenize(const char* str, const char* delimiters, StringBuffer& resultPath) override { return docModel->tokenize(str, delimiters, resultPath); }
+    virtual void setAttribute(const char* section, const char* name, const char* value) override { docModel->setAttribute(section, name, value); }
+    virtual const char* queryAttribute(const char* section, const char* name) override { return docModel->queryAttribute(section, name); }
+    virtual const char* getAttribute(const char* section, const char* name, StringBuffer& s) override { return docModel->getAttribute(section, name, s); }
+    virtual const char* getXPathString(const char* xpath, StringBuffer& s) const override { return docModel->getXPathString(xpath, s); }
+    virtual __int64 getXPathInt64(const char* xpath, __int64 dft = false) const override { return docModel->getXPathInt64(xpath, dft); }
+    virtual bool getXPathBool(const char* xpath, bool dft = false) const override { return docModel->getXPathBool(xpath, dft); }
+    virtual void toXML(StringBuffer& xml, const char* section, bool includeParentNode = false) override { docModel->toXML(xml, section, includeParentNode); }
+    virtual void toXML(StringBuffer& xml) override { docModel->toXML(xml); }
+    virtual IPropertyTree* createPTreeFromSection(const char* section) override { return docModel->createPTreeFromSection(section); }
+    virtual void cleanupTemporaries() override { docModel->cleanupTemporaries(); }
+public: // IEsdlScriptContext
+    virtual IEspContext* queryEspContext() const override { return espCtx; }
+    virtual IEsdlFunctionRegister* queryFunctionRegister() const override { return functionRegister; }
+    virtual void setTraceToStdout(bool val) override
+    {
+        if (val != traceToStdout)
+        {
+            traceToStdout = val;
+            if (val)
+            {
+                if (!consoleSink)
+                    consoleSink.setown(new CConsoleTraceMsgSink());
+                tracer->setSink(consoleSink);
+            }
+            else
+                tracer->setSink(jlogSink);
+        }
+    }
+    virtual bool getTraceToStdout() const override { return traceToStdout; }
+    virtual void setTestMode(bool val) override { testMode = val; }
+    virtual bool getTestMode() const override { return testMode; }
+    virtual ITracer& tracerRef() const override { return *tracer; }
+    virtual bool enableMasking(const char* domainId, uint8_t version) override
+    {
+        if (!maskingEngine)
+        {
+            tracerRef().uwarnlog("enable masking request not completed - no masking engine");
+            return false;
+        }
+        if (!maskerScopes.empty() && maskerScopes.back())
+        {
+            domainId = (isEmptyString(domainId) ? maskingEngine->inspector().queryDefaultDomain() : domainId);
+            version = (0 == version ? maskingEngine->inspector().queryDefaultVersion() : version);
+            IDataMaskingProfileContext* masker = maskerScopes.back();
+            if (masker->inspector().acceptsDomain(domainId) && masker->queryVersion() == version)
+                return true;
+            tracerRef().uwarnlog("enable masking request using %s:%hhu not completed - already enabled using %s:%hhu", domainId, version, masker->queryDomain(), masker->queryVersion());
+            return false;
+        }
+        Owned<IDataMaskingProfileContext> masker(maskingEngine->getContext(domainId, version, tracer));
+        if (!masker)
+        {
+            tracerRef().uwarnlog("enable masking request not completed - no context for '%s:%hhu'", domainId, version);
+            return false;
+        }
+        if (maskerScopes.empty())
+            maskerScopes.emplace_back(masker.getLink());
+        else
+            maskerScopes.back().setown(masker.getClear());
+        return true;
+    }
+
+    virtual bool maskingEnabled() const override
+    {
+        return (!maskerScopes.empty() && maskerScopes.back() != nullptr);
+    }
+
+    virtual IDataMaskingProfileContext* getMasker() const override
+    {
+        if (!maskerScopes.empty())
+            return maskerScopes.back().getLink();
+        return nullptr;
+    }
+
+    virtual void setTraceOptions(bool enabled, bool locked) override
+    {
+        if (traceOptionsScopes.empty())
+            traceOptionsScopes.emplace_back(enabled, locked);
+        else
+        {
+            TraceOptionsScope& entry = traceOptionsScopes.back();
+            if (!entry.second)
+            {
+                entry.first = enabled;
+                entry.second = locked;
+            }
+        }
+    }
+
+    virtual bool isTraceEnabled() const override
+    {
+        return (!traceOptionsScopes.empty() && traceOptionsScopes.back().first);
+    }
+
+    virtual bool isTraceLocked() const override
+    {
+        return (!traceOptionsScopes.empty() && traceOptionsScopes.back().second);
+    }
+
+protected:
+    virtual void pushMaskerScope() override
+    {
+        if (maskerScopes.empty())
+            maskerScopes.emplace_back(nullptr);
+        else if (maskerScopes.back())
+            maskerScopes.emplace_back(maskerScopes.back()->clone());
+        else
+            maskerScopes.emplace_back(nullptr);
+    }
+
+    virtual void popMaskerScope() override
+    {
+        if (maskerScopes.empty())
+            throw makeStringException(-1, "popMaskerScope failed - unbalanced push");
+        maskerScopes.pop_back();
+    }
+
+    virtual void pushTraceOptionsScope() override
+    {
+        if (traceOptionsScopes.empty())
+            throw makeStringException(-1, "pushTraceOptionsScope failed - empty stack");
+        TraceOptionsScope& parent = traceOptionsScopes.back();
+        traceOptionsScopes.emplace_back(parent.first, parent.second);
+    }
+
+    virtual void popTraceOptionsScope() override
+    {
+        if (maskerScopes.empty())
+            throw makeStringException(-1, "popTraceOptionsScope failed - unbalanced push");
+        traceOptionsScopes.pop_back();
+    }
+
+private:
+    Owned<IEspContext>            espCtx;
+    IEsdlFunctionRegister*        functionRegister = nullptr;
+    Owned<ISectionalXmlDocModel>  docModel;
+    bool                          traceToStdout = false;
+    bool                          testMode = false;
+    Owned<CModularTracer>         tracer;
+    Owned<IModularTraceMsgSink>   jlogSink;
+    Owned<IModularTraceMsgSink>   consoleSink;
+    Owned<IDataMaskingEngine>     maskingEngine;
+    using MaskerScope = Owned<IDataMaskingProfileContext>;
+    using MaskerScopeStack = std::list<MaskerScope>;
+    using TraceOptionsScope = std::pair<bool, bool>;
+    using TraceOptionsScopeStack = std::list<TraceOptionsScope>;
+    MaskerScopeStack              maskerScopes;
+    TraceOptionsScopeStack        traceOptionsScopes;
+public:
+    CEsdlScriptContext(IEspContext* _espCtx, IEsdlFunctionRegister* _functionRegister, IDataMaskingEngine* _engine)
+        : functionRegister(_functionRegister)
+    {
+        if (_espCtx)
+            espCtx.set(_espCtx);
+        else
+            espCtx.setown(createEspContext(nullptr));
+        docModel.setown(createSectionalXmlDocModel(this));
+        tracer.setown(new CModularTracer());
+        jlogSink.setown(tracer->getSink());
+        maskingEngine.setown(_engine);
+        traceOptionsScopes.emplace_back(true, false);
+    }
+    ~CEsdlScriptContext()
+    {
+    }
+};
 
 class OptionalCriticalBlock
 {
@@ -45,10 +260,163 @@ public:
     }
 };
 
-IEsdlTransformOperation *createEsdlTransformOperation(IXmlPullParser &xpp, const StringBuffer &prefix, bool withVariables, bool ignoreCodingErrors, IEsdlFunctionRegister *functionRegister, bool canCreateFunctions);
-void createEsdlTransformOperations(IArrayOf<IEsdlTransformOperation> &operations, IXmlPullParser &xpp, const StringBuffer &prefix, bool withVariables, bool ignoreCodingErrors, IEsdlFunctionRegister *functionRegister);
-void createEsdlTransformChooseOperations(IArrayOf<IEsdlTransformOperation> &operations, IXmlPullParser &xpp, const StringBuffer &prefix, bool withVariables, bool ignoreCodingErrors, IEsdlFunctionRegister *functionRegister);
-typedef void (*esdlOperationsFactory_t)(IArrayOf<IEsdlTransformOperation> &operations, IXmlPullParser &xpp, const StringBuffer &prefix, bool withVariables, bool ignoreCodingErrors, IEsdlFunctionRegister *functionRegister);
+/**
+ * @brief Abstract interface providing external access to trace messaging in the context of an
+ *        ESDL script operation.
+ *
+ * An implementation encapsulates warning, error, and exception reporting logic for operations.
+ * Operations and their helpers can focus on why a message is being generated without having to
+ * know how messages are expected to be generated.
+ */
+interface IEsdlOperationTraceMessenger
+{
+    /**
+     * @brief Record a warning message in trace output.
+     *
+     * Implementations should not throw an exception.
+     *
+     * @param code
+     * @param msg
+     */
+    virtual void recordWarning(int code, const char* msg) const = 0;
+
+    /**
+     * @brief Record an error in trace output and possibly throw an exception.
+     *
+     * An implementation may choose to throw exceptions on any or all errors.
+     *
+     * @param code
+     * @param msg
+     */
+    virtual void recordError(int code, const char* msg) const = 0;
+
+    /**
+     * @brief Record an error in trace output and always throw an exception.
+     *
+     * An implementation is expected to throw exceptions every time.
+     *
+     * @param code
+     * @param msg
+     */
+    virtual void recordException(int code, const char* msg) const = 0;
+
+};
+
+/**
+ * @brief Encapsulation of an operation property that may be given as either an XPath or literal.
+ *
+ * Properties may be required or optional. Failure setting a required property records an error
+ * in a manner consistent with the containing operation's configuration.
+ *
+ * Required and optional values can be set in one of three ways:
+ *
+ * 1. Pull parser start tag and literal property name. The XPath property name is derived from the
+ *    literal name. The start tag is the source for both the XPath and the literal values.
+ * 2. Pull parser start tag, XPath property name, and literal property name. The start tag is the
+ *    source for both the XPath and the literal values.
+ * 3. An XPath property value and a literal property value.
+ *
+ * An XPath value, if not empty, takes precedence over any literal value.
+ */
+class XPathLiteralUnion
+{
+private:
+    Owned<ICompiledXpath> xpath;
+    StringAttr            literal;
+
+public:
+    inline bool isEmpty() const
+    {
+        return (!xpath && literal.isEmpty());
+    }
+
+    inline bool isXPath() const
+    {
+        return xpath;
+    }
+
+    inline bool isLiteral() const
+    {
+        return !literal.isEmpty();
+    }
+
+    const char* configValue() const
+    {
+        if (xpath)
+            return xpath->getXpath();
+        return literal;
+    }
+
+    inline bool setOptional(StartTag& stag, const char* literalName)
+    {
+        VStringBuffer xpathName("xpath_%s", literalName);
+        return setOptional(stag, xpathName, literalName);
+    }
+
+    inline bool setOptional(StartTag& stag, const char* xpathName, const char* literalName)
+    {
+        return set(stag.getValue(xpathName), stag.getValue(literalName));
+    }
+
+    inline bool setOptional(const char* _xpath, const char* _literal)
+    {
+        return set(_xpath, _literal);
+    }
+
+    inline bool setRequired(StartTag& stag, const char* literalName, IEsdlOperationTraceMessenger& messenger)
+    {
+        VStringBuffer xpathName("xpath_%s", literalName);
+        return setRequired(stag, xpathName, literalName, messenger);
+    }
+
+    inline bool setRequired(StartTag& stag, const char* xpathName, const char* literalName, IEsdlOperationTraceMessenger& messenger)
+    {
+        const char* _xpath = stag.getValue(xpathName);
+        if (!set(_xpath, (isEmptyString(_xpath) ? stag.getValue(literalName) : nullptr)))
+        {
+            VStringBuffer msg("missing both '%s' and '%s' (one is required)", xpathName, literalName);
+            messenger.recordError(ESDL_SCRIPT_MissingOperationAttr, msg);
+            return false;
+        }
+        return true;
+    }
+
+    inline bool setRequired(const char* _xpath, const char* _literal, IEsdlOperationTraceMessenger& messenger)
+    {
+        if (!set(_xpath, _literal))
+        {
+            messenger.recordError(ESDL_SCRIPT_MissingOperationAttr, "missing xpath and literal values (one is required)");
+            return false;
+        }
+        return true;
+    }
+
+    const char* get(StringBuffer& buffer, IXpathContext& context) const
+    {
+        if (xpath)
+            return context.evaluateAsString(xpath, buffer);
+        buffer.set(literal);
+        return buffer;
+    }
+
+protected:
+    bool set(const char* _xpath, const char* _literal)
+    {
+        xpath.clear();
+        literal.clear();
+        if (!isEmptyString(_xpath))
+            xpath.setown(compileXpath(_xpath));
+        else if (!isEmptyString(_literal))
+            literal.set(_literal);
+        else
+            return false;
+        return true;
+    }
+};
+
+IEsdlTransformOperation *createEsdlTransformOperation(IXmlPullParser &xpp, const StringBuffer &prefix, bool withVariables, IEsdlOperationTraceMessenger& messenger, IEsdlFunctionRegister *functionRegister, bool canCreateFunctions);
+void createEsdlTransformOperations(IArrayOf<IEsdlTransformOperation> &operations, IXmlPullParser &xpp, const StringBuffer &prefix, bool withVariables, IEsdlOperationTraceMessenger& messenger, IEsdlFunctionRegister *functionRegister);
+typedef void (*esdlOperationsFactory_t)(IArrayOf<IEsdlTransformOperation> &operations, IXmlPullParser &xpp, const StringBuffer &prefix, bool withVariables, IEsdlOperationTraceMessenger& messenger, IEsdlFunctionRegister *functionRegister);
 
 bool getStartTagValueBool(StartTag &stag, const char *name, bool defaultValue)
 {
@@ -111,7 +479,7 @@ static inline StringBuffer &makeOperationTagName(StringBuffer &s, const StringBu
     return s.append(prefix).append(op);
 }
 
-class CEsdlTransformOperationBase : public CInterfaceOf<IEsdlTransformOperation>
+class CEsdlTransformOperationBase : public CInterfaceOf<IEsdlTransformOperation>, public IEsdlOperationTraceMessenger
 {
 protected:
     StringAttr m_tagname;
@@ -133,6 +501,18 @@ public:
     {
         return nullptr;
     }
+    virtual void recordWarning(int code, const char* msg) const override
+    {
+        esdlOperationWarning(code, m_tagname, msg, m_traceName);
+    }
+    virtual void recordError(int code, const char* msg) const override
+    {
+        esdlOperationError(code, m_tagname, msg, m_traceName, !m_ignoreCodingErrors);
+    }
+    virtual void recordException(int code, const char* msg) const override
+    {
+        esdlOperationError(code, m_tagname, msg, m_traceName, true);
+    }
 };
 
 class CEsdlTransformOperationWithChildren : public CEsdlTransformOperationBase
@@ -147,9 +527,9 @@ public:
     {
         //load children
         if (factory)
-            factory(m_children, xpp, prefix, withVariables, m_ignoreCodingErrors, functionRegister);
+            factory(m_children, xpp, prefix, withVariables, *this, functionRegister);
         else
-            createEsdlTransformOperations(m_children, xpp, prefix, withVariables, m_ignoreCodingErrors, functionRegister);
+            createEsdlTransformOperations(m_children, xpp, prefix, withVariables, *this, functionRegister);
     }
 
     virtual ~CEsdlTransformOperationWithChildren(){}
@@ -184,7 +564,7 @@ public:
     CEsdlTransformOperationWithoutChildren(IXmlPullParser &xpp, StartTag &stag, const StringBuffer &prefix) : CEsdlTransformOperationBase(xpp, stag, prefix)
     {
         if (xpp.skipSubTreeEx())
-            esdlOperationError(ESDL_SCRIPT_Error, m_tagname, "should not have child tags", m_traceName, !m_ignoreCodingErrors);
+            recordError(ESDL_SCRIPT_Error, "should not have child tags");
     }
 
     virtual ~CEsdlTransformOperationWithoutChildren(){}
@@ -204,7 +584,7 @@ public:
             m_traceName.set(stag.getValue("name"));
         m_name.set(stag.getValue("name"));
         if (m_name.isEmpty())
-            esdlOperationError(ESDL_SCRIPT_MissingOperationAttr, m_tagname, "without name", m_traceName, !m_ignoreCodingErrors);
+            recordError(ESDL_SCRIPT_MissingOperationAttr, "without name");
         const char *select = stag.getValue("select");
         if (!isEmptyString(select))
             m_select.setown(compileXpath(select));
@@ -310,11 +690,11 @@ public:
     {
         m_name.set(stag.getValue("name"));
         if (m_name.isEmpty())
-            esdlOperationError(ESDL_SCRIPT_MissingOperationAttr, m_tagname, "without name or xpath_name", m_traceName, !m_ignoreCodingErrors);
+            recordError(ESDL_SCRIPT_MissingOperationAttr, "without name or xpath_name");
 
         const char *value = stag.getValue("value");
         if (isEmptyString(value))
-            esdlOperationError(ESDL_SCRIPT_MissingOperationAttr, m_tagname, "without value", m_traceName, !m_ignoreCodingErrors);
+            recordError(ESDL_SCRIPT_MissingOperationAttr, "without value");
         m_value.setown(compileXpath(value));
 
         //optional, conversions normally work well, ONLY WHEN NEEDED we may need to have special handling for mysql types
@@ -424,8 +804,37 @@ public:
 
         m_server.setown(compileOptionalXpath(stag.getValue("server")));
         m_user.setown(compileOptionalXpath(stag.getValue("user")));
-        m_password.setown(compileOptionalXpath(stag.getValue("password")));
         m_database.setown(compileOptionalXpath(stag.getValue("database")));
+
+        /*
+         * Use of secrets for database connection information is the recommended best practice. Use
+         * of an inline plaintext password is the worst option, with use of an easily decrypted
+         * inline password only slightly less risky.
+         *
+         * An encrypted password literal takes precedence over a password XPath. A decrypted value
+         * is converted into an XPath, allowing its use in place of a password XPath.
+         */
+        const char* encryptedPassword = stag.getValue("encrypted-password");
+        if (!isEmptyString(encryptedPassword))
+        {
+            try
+            {
+                StringBuffer tmp;
+                decrypt(tmp, encryptedPassword);
+                m_password.setown(compileOptionalXpath(VStringBuffer("'%s'", tmp.str())));
+            }
+            catch (IException* e)
+            {
+                recordError(ESDL_SCRIPT_InvalidOperationAttr, "invalid encrypted-password");
+                e->Release();
+            }
+            catch (...)
+            {
+                recordError(ESDL_SCRIPT_InvalidOperationAttr, "invalid encrypted-password");
+            }
+        }
+        else
+            m_password.setown(compileOptionalXpath(stag.getValue("password")));
 
         //script can set any MYSQL options using an attribute with the same name as the option enum, for example
         //    MYSQL_SET_CHARSET_NAME="'latin1'" or MYSQL_SET_CHARSET_NAME="$charset"
@@ -446,28 +855,21 @@ public:
         }
 
         int type = 0;
-        while((type = xpp.next()) != XmlPullParser::END_DOCUMENT)
+        while((type = xpp.next()) != XmlPullParser::END_TAG)
         {
-            switch(type)
+            if (XmlPullParser::START_TAG == type)
             {
-                case XmlPullParser::START_TAG:
-                {
                     StartTag stag;
                     xpp.readStartTag(stag);
                     const char *op = stag.getLocalName();
                     if (isEmptyString(op))
-                        esdlOperationError(ESDL_SCRIPT_Error, m_tagname, "unknown error", m_traceName, !m_ignoreCodingErrors);
+                        recordError(ESDL_SCRIPT_Error, "unknown error");
                     if (streq(op, "bind"))
                         m_parameters.append(*new CEsdlTransformOperationMySqlBindParmeter(xpp, stag, prefix));
                     else if (streq(op, "sql"))
                         readFullContent(xpp, m_sql);
                     else
                         xpp.skipSubTreeEx();
-                    break;
-                }
-                case XmlPullParser::END_TAG:
-                case XmlPullParser::END_DOCUMENT:
-                    return;
             }
         }
 
@@ -485,7 +887,7 @@ public:
         if (m_sql.isEmpty())
             buildMissingMySqlParameterMessage(errmsg, "sql");
         if (errmsg.length())
-            esdlOperationError(ESDL_SCRIPT_MissingOperationAttr, m_tagname, errmsg, m_traceName, !m_ignoreCodingErrors);
+            recordError(ESDL_SCRIPT_MissingOperationAttr, errmsg);
     }
 
     virtual ~CEsdlTransformOperationMySqlCall()
@@ -506,7 +908,7 @@ public:
         if (required)
         {
             StringBuffer msg("empty or missing ");
-            esdlOperationError(ESDL_SCRIPT_MissingOperationAttr, m_tagname, msg.append(name), m_traceName, true);
+            recordException(ESDL_SCRIPT_MissingOperationAttr, msg.append(name));
         }
     }
     IPropertyTree *getSecretInfo(IXpathContext * sourceContext)
@@ -611,12 +1013,12 @@ public:
             StringBuffer msg;
             e->errorMessage(msg);
             e->Release();
-            esdlOperationError(code, m_tagname, msg, !m_ignoreCodingErrors);
+            recordError(code, msg);
         }
         catch (...)
         {
             VStringBuffer msg("unknown exception evaluating select '%s'", m_select.get() ? m_select->getXpath() : "undefined!");
-            esdlOperationError(ESDL_SCRIPT_Error, m_tagname, msg, !m_ignoreCodingErrors);
+            recordError(ESDL_SCRIPT_Error, msg);
         }
         return xpathset;
     }
@@ -691,8 +1093,7 @@ public:
 class CEsdlTransformOperationHttpHeader : public CEsdlTransformOperationWithoutChildren, implements IEsdlTransformOperationHttpHeader
 {
 protected:
-    StringAttr m_name;
-    Owned<ICompiledXpath> m_xpath_name;
+    XPathLiteralUnion m_name;
     Owned<ICompiledXpath> m_value;
 
 public:
@@ -700,16 +1101,13 @@ public:
 
     CEsdlTransformOperationHttpHeader(IXmlPullParser &xpp, StartTag &stag, const StringBuffer &prefix) : CEsdlTransformOperationWithoutChildren(xpp, stag, prefix)
     {
-        m_name.set(stag.getValue("name"));
-        const char *xpath_name = stag.getValue("xpath_name");
-        if (m_name.isEmpty() && isEmptyString(xpath_name))
-            esdlOperationError(ESDL_SCRIPT_MissingOperationAttr, m_tagname, "without name or xpath_name", m_traceName, !m_ignoreCodingErrors);
-        if (!isEmptyString(xpath_name))
-            m_xpath_name.setown(compileXpath(xpath_name));
+        m_name.setRequired(stag, "name", *this);
+        if (m_name.isEmpty())
+            recordError(ESDL_SCRIPT_MissingOperationAttr, "without name or xpath_name");
 
         const char *value = stag.getValue("value");
         if (isEmptyString(value))
-            esdlOperationError(ESDL_SCRIPT_MissingOperationAttr, m_tagname, "without value", m_traceName, !m_ignoreCodingErrors);
+            recordError(ESDL_SCRIPT_MissingOperationAttr, "without value");
         m_value.setown(compileXpath(value));
     }
 
@@ -726,10 +1124,7 @@ public:
         CXpathContextLocation location(targetContext);
         targetContext->addElementToLocation("header");
         StringBuffer name;
-        if (m_xpath_name)
-            sourceContext->evaluateAsString(m_xpath_name, name);
-        else
-            name.set(m_name);
+        m_name.get(name, *sourceContext);
 
         StringBuffer value;
         if (m_value)
@@ -747,7 +1142,7 @@ public:
     virtual void toDBGLog () override
     {
     #if defined(_DEBUG)
-        DBGLOG ("> %s (%s, value(%s)) >>>>>>>>>>", m_tagname.str(), m_xpath_name ? m_xpath_name->getXpath() : m_name.str(), m_value ? m_value->getXpath() : "");
+        DBGLOG ("> %s (%s, value(%s)) >>>>>>>>>>", m_tagname.str(), m_name.configValue(), m_value ? m_value->getXpath() : "");
     #endif
     }
 };
@@ -782,38 +1177,31 @@ public:
         if (m_section.isEmpty())
             m_section.set("temporaries");
         if (m_name.isEmpty())
-            esdlOperationError(ESDL_SCRIPT_MissingOperationAttr, m_tagname, "without name", m_traceName, !m_ignoreCodingErrors);
+            recordError(ESDL_SCRIPT_MissingOperationAttr, "without name");
         const char *url = stag.getValue("url");
         if (isEmptyString(url))
-            esdlOperationError(ESDL_SCRIPT_MissingOperationAttr, m_tagname, "without url", m_traceName, !m_ignoreCodingErrors);
+            recordError(ESDL_SCRIPT_MissingOperationAttr, "without url");
         m_url.setown(compileXpath(url));
         const char *msTestDelayStr = stag.getValue("test-delay");
         if (!isEmptyString(msTestDelayStr))
             m_testDelay.setown(compileXpath(msTestDelayStr));
 
         int type = 0;
-        while((type = xpp.next()) != XmlPullParser::END_DOCUMENT)
+        while((type = xpp.next()) != XmlPullParser::END_TAG)
         {
-            switch(type)
+            if (XmlPullParser::START_TAG == type)
             {
-                case XmlPullParser::START_TAG:
-                {
-                    StartTag stag;
-                    xpp.readStartTag(stag);
-                    const char *op = stag.getLocalName();
-                    if (isEmptyString(op))
-                        esdlOperationError(ESDL_SCRIPT_Error, m_tagname, "unknown error", m_traceName, !m_ignoreCodingErrors);
-                    if (streq(op, "http-header"))
-                        m_headers.append(*new CEsdlTransformOperationHttpHeader(xpp, stag, prefix));
-                    else if (streq(op, "content"))
-                        m_content.setown(new CEsdlTransformOperationHttpContentXml(xpp, stag, prefix, functionRegister));
-                    else
-                        xpp.skipSubTreeEx();
-                    break;
-                }
-                case XmlPullParser::END_TAG:
-                case XmlPullParser::END_DOCUMENT:
-                    return;
+                StartTag stag;
+                xpp.readStartTag(stag);
+                const char *op = stag.getLocalName();
+                if (isEmptyString(op))
+                    recordError(ESDL_SCRIPT_Error, "unknown error");
+                if (streq(op, "http-header"))
+                    m_headers.append(*new CEsdlTransformOperationHttpHeader(xpp, stag, prefix));
+                else if (streq(op, "content"))
+                    m_content.setown(new CEsdlTransformOperationHttpContentXml(xpp, stag, prefix, functionRegister));
+                else
+                    xpp.skipSubTreeEx();
             }
         }
     }
@@ -971,10 +1359,20 @@ public:
 
 class CEsdlTransformOperationParameter : public CEsdlTransformOperationVariable
 {
+private:
+    Owned<ICompiledXpath> m_failureCode;
+    Owned<ICompiledXpath> m_failureMsg;
 public:
     CEsdlTransformOperationParameter(IXmlPullParser &xpp, StartTag &stag, const StringBuffer &prefix, IEsdlFunctionRegister *functionRegister)
         : CEsdlTransformOperationVariable(xpp, stag, prefix, functionRegister)
     {
+        if (!m_select)
+        {
+            m_failureCode.setown(compileOptionalXpath(stag.getValue("failure_code")));
+            m_failureMsg.setown(compileOptionalXpath(stag.getValue("failure_message")));
+            if (m_failureCode && !m_failureMsg)
+                recordError(ESDL_SCRIPT_MissingOperationAttr, "failure_code without failure_message");
+        }
     }
 
     virtual ~CEsdlTransformOperationParameter()
@@ -987,6 +1385,13 @@ public:
 
         if (m_select)
             return sourceContext->declareCompiledParameter(m_name, m_select);
+        if (m_failureMsg && !sourceContext->checkParameterName(m_name))
+        {
+            StringBuffer msg;
+            int code = (m_failureCode ? (int)sourceContext->evaluateAsNumber(m_failureCode) : ESDL_SCRIPT_Error);
+            sourceContext->evaluateAsString(m_failureMsg, msg);
+            throw makeStringExceptionV(code, "%s", msg.str());
+        }
         return sourceContext->declareParameter(m_name, "");
     }
 };
@@ -994,8 +1399,7 @@ public:
 class CEsdlTransformOperationSetSectionAttributeBase : public CEsdlTransformOperationWithoutChildren
 {
 protected:
-    StringAttr m_name;
-    Owned<ICompiledXpath> m_xpath_name;
+    XPathLiteralUnion m_name;
     Owned<ICompiledXpath> m_select;
 
 public:
@@ -1004,28 +1408,20 @@ public:
         if (m_traceName.isEmpty())
             m_traceName.set(stag.getValue("name"));
         if (!isEmptyString(attrName))
-            m_name.set(attrName);
+            m_name.setOptional(nullptr, attrName);
         else
-        {
-            m_name.set(stag.getValue("name"));
-
-            const char *xpath_name = stag.getValue("xpath_name");
-            if (!isEmptyString(xpath_name))
-                m_xpath_name.setown(compileXpath(xpath_name));
-            else if (m_name.isEmpty())
-                esdlOperationError(ESDL_SCRIPT_MissingOperationAttr, m_tagname, "without name", m_traceName, !m_ignoreCodingErrors); //don't mention value, it's deprecated
-        }
+            m_name.setRequired(stag, "name", *this);
 
         const char *select = stag.getValue("select");
         if (isEmptyString(select))
-            esdlOperationError(ESDL_SCRIPT_MissingOperationAttr, m_tagname, "without select", m_traceName, !m_ignoreCodingErrors); //don't mention value, it's deprecated
+            recordError(ESDL_SCRIPT_MissingOperationAttr, "without select"); //don't mention value, it's deprecated
         m_select.setown(compileXpath(select));
     }
 
     virtual void toDBGLog() override
     {
 #if defined(_DEBUG)
-        DBGLOG(">%s> %s(name(%s), select('%s'))", m_traceName.str(), m_tagname.str(), (m_xpath_name) ? m_xpath_name->getXpath() : m_name.str(), m_select->getXpath());
+        DBGLOG(">%s> %s(name(%s), select('%s'))", m_traceName.str(), m_tagname.str(), m_name.configValue(), m_select->getXpath());
 #endif
     }
 
@@ -1037,15 +1433,12 @@ public:
     {
         OptionalCriticalBlock block(crit);
 
-        if ((!m_name && !m_xpath_name) || !m_select)
+        if (m_name.isEmpty() || !m_select)
             return false; //only here if "optional" backward compatible support for now (optional syntax errors aren't actually helpful)
         try
         {
             StringBuffer name;
-            if (m_xpath_name)
-                sourceContext->evaluateAsString(m_xpath_name, name);
-            else
-                name.set(m_name);
+            m_name.get(name, *sourceContext);
 
             StringBuffer value;
             sourceContext->evaluateAsString(m_select, value);
@@ -1057,11 +1450,11 @@ public:
             StringBuffer msg;
             e->errorMessage(msg);
             e->Release();
-            esdlOperationError(code, m_tagname, msg, m_traceName, !m_ignoreCodingErrors);
+            recordError(code, msg);
         }
         catch (...)
         {
-            esdlOperationError(ESDL_SCRIPT_Error, m_tagname, "unknown exception processing", m_traceName, !m_ignoreCodingErrors);
+            recordError(ESDL_SCRIPT_Error, "unknown exception processing");
         }
         return false;
     }
@@ -1104,8 +1497,7 @@ class CEsdlTransformOperationSetValue : public CEsdlTransformOperationWithoutChi
 {
 protected:
     Owned<ICompiledXpath> m_select;
-    Owned<ICompiledXpath> m_xpath_target;
-    StringAttr m_target;
+    XPathLiteralUnion m_target;
     bool m_required = true;
 
 public:
@@ -1114,30 +1506,22 @@ public:
         if (m_traceName.isEmpty())
             m_traceName.set(stag.getValue("name"));
 
-        const char *xpath_target = stag.getValue("xpath_target");
-        const char *target = stag.getValue("target");
-
-        if (isEmptyString(target) && isEmptyString(xpath_target))
-            esdlOperationError(ESDL_SCRIPT_MissingOperationAttr, m_tagname.str(), "without target", m_traceName.str(), !m_ignoreCodingErrors);
+        m_target.setRequired(stag, "target", *this);
 
         const char *select = stag.getValue("select");
         if (isEmptyString(select))
             select = stag.getValue("value");
         if (isEmptyString(select))
-            esdlOperationError(ESDL_SCRIPT_MissingOperationAttr, m_tagname, "without select", m_traceName, !m_ignoreCodingErrors); //don't mention value, it's deprecated
+            recordError(ESDL_SCRIPT_MissingOperationAttr, "without select"); //don't mention value, it's deprecated
 
         m_select.setown(compileXpath(select));
-        if (!isEmptyString(xpath_target))
-            m_xpath_target.setown(compileXpath(xpath_target));
-        else if (!isEmptyString(target))
-            m_target.set(target);
         m_required = getStartTagValueBool(stag, "required", true);
     }
 
     virtual void toDBGLog() override
     {
 #if defined(_DEBUG)
-        DBGLOG(">%s> %s(%s, select('%s'))", m_traceName.str(), m_tagname.str(), m_target.str(), m_select->getXpath());
+        DBGLOG(">%s> %s(%s, select('%s'))", m_traceName.str(), m_tagname.str(), m_target.configValue(), m_select->getXpath());
 #endif
     }
 
@@ -1147,7 +1531,7 @@ public:
     {
         OptionalCriticalBlock block(crit);
 
-        if ((!m_xpath_target && m_target.isEmpty()) || !m_select)
+        if (m_target.isEmpty() || !m_select)
             return false; //only here if "optional" backward compatible support for now (optional syntax errors aren't actually helpful
         try
         {
@@ -1161,29 +1545,19 @@ public:
             StringBuffer msg;
             e->errorMessage(msg);
             e->Release();
-            esdlOperationError(code, m_tagname, msg, m_traceName, !m_ignoreCodingErrors);
+            recordError(code, msg);
         }
         catch (...)
         {
-            esdlOperationError(ESDL_SCRIPT_Error, m_tagname, "unknown exception processing", m_traceName, !m_ignoreCodingErrors);
+            recordError(ESDL_SCRIPT_Error, "unknown exception processing");
         }
         return false;
     }
 
-    const char *getTargetPath(IXpathContext * xpathContext, StringBuffer &s)
-    {
-        if (m_xpath_target)
-        {
-            xpathContext->evaluateAsString(m_xpath_target, s);
-            return s;
-        }
-        return m_target.str();
-    }
     virtual bool doSet(IXpathContext * sourceContext, IXpathContext *targetContext, const char *value)
     {
-        StringBuffer xpath;
-        const char *target = getTargetPath(sourceContext, xpath);
-        targetContext->ensureSetValue(target, value, m_required);
+        StringBuffer target;
+        targetContext->ensureSetValue(m_target.get(target, *sourceContext), value, m_required);
         return true;
     }
 };
@@ -1204,7 +1578,7 @@ public:
             m_traceName.set(pfx);
 
         if (!pfx && isEmptyString(uri))
-            esdlOperationError(ESDL_SCRIPT_MissingOperationAttr, m_tagname.str(), "without prefix or uri", m_traceName.str(), !m_ignoreCodingErrors);
+            recordError(ESDL_SCRIPT_MissingOperationAttr, "without prefix or uri");
         m_uri.set(uri);
         m_prefix.set(pfx);
         m_current = getStartTagValueBool(stag, "current", m_uri.isEmpty());
@@ -1231,45 +1605,26 @@ public:
 class CEsdlTransformOperationRenameNode : public CEsdlTransformOperationWithoutChildren
 {
 protected:
-    StringAttr m_target;
-    StringAttr m_new_name;
-    Owned<ICompiledXpath> m_xpath_target;
-    Owned<ICompiledXpath> m_xpath_new_name;
+    XPathLiteralUnion m_target;
+    XPathLiteralUnion m_new_name;
     bool m_all = false;
 
 public:
     CEsdlTransformOperationRenameNode(IXmlPullParser &xpp, StartTag &stag, const StringBuffer &prefix) : CEsdlTransformOperationWithoutChildren(xpp, stag, prefix)
     {
-        const char *new_name = stag.getValue("new_name");
-        const char *xpath_new_name = stag.getValue("xpath_new_name");
-        if (isEmptyString(new_name) && isEmptyString(xpath_new_name))
-            esdlOperationError(ESDL_SCRIPT_MissingOperationAttr, m_tagname.str(), "without new name", m_traceName.str(), !m_ignoreCodingErrors);
+        m_new_name.setRequired(stag, "new_name", *this);
         if (m_traceName.isEmpty())
-            m_traceName.set(new_name ? new_name : xpath_new_name);
+            m_traceName.set(m_new_name.configValue());
 
-        const char *target = stag.getValue("target");
-        const char *xpath_target = stag.getValue("xpath_target");
-        if (isEmptyString(target) && isEmptyString(xpath_target))
-            esdlOperationError(ESDL_SCRIPT_MissingOperationAttr, m_tagname.str(), "without target", m_traceName.str(), !m_ignoreCodingErrors);
+        m_target.setRequired(stag, "target", *this);
 
-        if (!isEmptyString(xpath_target))
-            m_xpath_target.setown(compileXpath(xpath_target));
-        else if (!isEmptyString(target))
-            m_target.set(target);
-
-        if (!isEmptyString(xpath_new_name))
-            m_xpath_new_name.setown(compileXpath(xpath_new_name));
-        else if (!isEmptyString(new_name))
-            m_new_name.set(new_name);
         m_all = getStartTagValueBool(stag, "all", false);
     }
 
     virtual void toDBGLog() override
     {
 #if defined(_DEBUG)
-        const char *target = (m_xpath_target) ? m_xpath_target->getXpath() : m_target.str();
-        const char *new_name = (m_xpath_new_name) ? m_xpath_new_name->getXpath() : m_new_name.str();
-        DBGLOG(">%s> %s(%s, new_name('%s'))", m_traceName.str(), m_tagname.str(), target, new_name);
+        DBGLOG(">%s> %s(%s, new_name('%s'))", m_traceName.str(), m_tagname.str(), m_target.configValue(), m_new_name.configValue());
 #endif
     }
 
@@ -1279,21 +1634,15 @@ public:
     {
         OptionalCriticalBlock block(crit);
 
-        if ((!m_xpath_target && m_target.isEmpty()) || (!m_xpath_new_name && m_new_name.isEmpty()))
+        if (m_target.isEmpty() || m_new_name.isEmpty())
             return false; //only here if "optional" backward compatible support for now (optional syntax errors aren't actually helpful
         try
         {
             StringBuffer path;
-            if (m_xpath_target)
-                sourceContext->evaluateAsString(m_xpath_target, path);
-            else
-                path.set(m_target);
+            m_target.get(path, *sourceContext);
 
             StringBuffer name;
-            if (m_xpath_new_name)
-                sourceContext->evaluateAsString(m_xpath_new_name, name);
-            else
-                name.set(m_new_name);
+            m_new_name.get(name, *sourceContext);
 
             targetContext->rename(path, name, m_all);
         }
@@ -1303,11 +1652,11 @@ public:
             StringBuffer msg;
             e->errorMessage(msg);
             e->Release();
-            esdlOperationError(code, m_tagname, msg, m_traceName, !m_ignoreCodingErrors);
+            recordError(code, msg);
         }
         catch (...)
         {
-            esdlOperationError(ESDL_SCRIPT_Error, m_tagname, "unknown exception processing", m_traceName, !m_ignoreCodingErrors);
+            recordError(ESDL_SCRIPT_Error, "unknown exception processing");
         }
         return false;
     }
@@ -1324,7 +1673,7 @@ public:
     {
         const char *select = stag.getValue("select");
         if (isEmptyString(select))
-            esdlOperationError(ESDL_SCRIPT_MissingOperationAttr, m_tagname.str(), "without select", m_traceName.str(), !m_ignoreCodingErrors);
+            recordError(ESDL_SCRIPT_MissingOperationAttr, "without select");
 
         m_select.setown(compileXpath(select));
         m_new_name.set(stag.getValue("new_name"));
@@ -1353,11 +1702,11 @@ public:
             StringBuffer msg;
             e->errorMessage(msg);
             e->Release();
-            esdlOperationError(code, m_tagname, msg, m_traceName, !m_ignoreCodingErrors);
+            recordError(code, msg);
         }
         catch (...)
         {
-            esdlOperationError(ESDL_SCRIPT_Error, m_tagname, "unknown exception processing", m_traceName, !m_ignoreCodingErrors);
+            recordError(ESDL_SCRIPT_Error, "unknown exception processing");
         }
         return false;
     }
@@ -1369,6 +1718,7 @@ protected:
     StringAttr m_label;
     Owned<ICompiledXpath> m_test; //optional, if provided trace only if test evaluates to true
     Owned<ICompiledXpath> m_select;
+    const LogMsgCategory* m_category = nullptr;
 
 public:
     CEsdlTransformOperationTrace(IXmlPullParser &xpp, StartTag &stag, const StringBuffer &prefix) : CEsdlTransformOperationWithoutChildren(xpp, stag, prefix)
@@ -1376,13 +1726,25 @@ public:
         m_label.set(stag.getValue("label"));
         const char *select = stag.getValue("select");
         if (isEmptyString(select))
-            esdlOperationError(ESDL_SCRIPT_MissingOperationAttr, m_tagname.str(), "without select", m_traceName.str(), !m_ignoreCodingErrors);
+            recordError(ESDL_SCRIPT_MissingOperationAttr, "without select");
 
         m_select.setown(compileXpath(select));
 
         const char *test = stag.getValue("test");
         if (!isEmptyString(test))
             m_test.setown(compileXpath(test));
+
+        const char* msgClass = stag.getValue("class");
+        if (isEmptyString(msgClass) || strieq(msgClass, "information"))
+            m_category = &MCuserInfo;
+        else if (strieq(msgClass, "error"))
+            m_category = &MCuserError;
+        else if (strieq(msgClass, "warning"))
+            m_category = &MCuserWarning;
+        else if (strieq(msgClass, "progress"))
+            m_category = &MCuserProgress;
+        else
+            recordError(ESDL_SCRIPT_InvalidOperationAttr, "invalid message class");
     }
 
     virtual void toDBGLog() override
@@ -1396,13 +1758,28 @@ public:
 
     virtual bool exec(CriticalSection *crit, IInterface *preparedForAsync, IEsdlScriptContext * scriptContext, IXpathContext * targetContext, IXpathContext * sourceContext) override
     {
+        if (!scriptContext->isTraceEnabled())
+            return true;
+
         OptionalCriticalBlock block(crit);
 
         try
         {
+            if (!m_category)
+                return false;
             if (m_test && !sourceContext->evaluateAsBoolean(m_test))
                 return false;
-            targetContext->trace(m_label, m_select, scriptContext->getTraceToStdout());
+
+            StringBuffer                      text;
+            Owned<IDataMaskingProfileContext> masker(scriptContext->getMasker());
+            if (getText(text, targetContext, sourceContext, masker))
+            {
+                ITracer& tracer = scriptContext->tracerRef();
+                if (m_label.isEmpty())
+                    tracer.log(*m_category, "%s", text.str());
+                else
+                    tracer.log(*m_category, "%s %s", m_label.str(), text.str());
+            }
         }
         catch (IException* e)
         {
@@ -1410,45 +1787,108 @@ public:
             StringBuffer msg;
             e->errorMessage(msg);
             e->Release();
-            esdlOperationError(code, m_tagname, msg, m_traceName, !m_ignoreCodingErrors);
+            recordError(code, msg);
         }
         catch (...)
         {
-            esdlOperationError(ESDL_SCRIPT_Error, m_tagname, "unknown exception processing", m_traceName, !m_ignoreCodingErrors);
+            recordError(ESDL_SCRIPT_Error, "unknown exception processing");
         }
         return false;
+    }
+
+    virtual bool getText(StringBuffer& text, IXpathContext* targetContext, IXpathContext* sourceContext, IDataMaskingProfileContext* masker) = 0;
+};
+
+class CEsdlTransformOperationTraceContent : public CEsdlTransformOperationTrace
+{
+protected:
+    StringAttr m_contentType;
+    Owned<ICompiledXpath> m_skipMask;
+
+public:
+    CEsdlTransformOperationTraceContent(IXmlPullParser &xpp, StartTag &stag, const StringBuffer &prefix) : CEsdlTransformOperationTrace(xpp, stag, prefix)
+    {
+        m_contentType.set(stag.getValue("content_type"));
+        const char* skipMask = stag.getValue("skip_mask");
+        if (!isEmptyString(skipMask))
+            m_skipMask.setown(compileXpath(skipMask));
+    }
+
+    virtual bool getText(StringBuffer& text, IXpathContext* targetContext, IXpathContext* sourceContext, IDataMaskingProfileContext* masker) override
+    {
+        bool isValue = false;
+        if (!targetContext->selectText(m_select, text, isValue) || !masker)
+            return true;
+        if (!m_skipMask || !sourceContext->evaluateAsBoolean(m_skipMask))
+        {
+            char* buffer = const_cast<char*>(text.str());
+            masker->maskContent(m_contentType.get(), buffer, 0, text.length());
+        }
+        return true;
+    }
+};
+
+class CEsdlTransformOperationTraceValue : public CEsdlTransformOperationTrace
+{
+protected:
+    XPathLiteralUnion m_valueType;
+    XPathLiteralUnion m_maskStyle;
+
+public:
+    CEsdlTransformOperationTraceValue(IXmlPullParser &xpp, StartTag &stag, const StringBuffer &prefix) : CEsdlTransformOperationTrace(xpp, stag, prefix)
+    {
+        m_valueType.setRequired(stag, "value_type", *this);
+        m_maskStyle.setOptional(stag, "mask_style");
+    }
+
+    virtual bool getText(StringBuffer& text, IXpathContext* targetContext, IXpathContext* sourceContext, IDataMaskingProfileContext* masker) override
+    {
+        bool isValue = true;
+        if (!targetContext->selectText(m_select, text, isValue))
+        {
+            if (!isValue)
+            {
+                recordWarning(ESDL_SCRIPT_Warning, VStringBuffer("ambiguous value xpath '%s'", m_select->getXpath()));
+                return false;
+            }
+        }
+        if (text.isEmpty() || !masker)
+            return true;
+
+        StringBuffer vt, ms;
+        m_valueType.get(vt, *sourceContext);
+        if (vt.isEmpty())
+        {
+            recordWarning(ESDL_SCRIPT_Warning, VStringBuffer("empty value_type from '%s'", m_valueType.configValue()));
+            return false;
+        }
+        m_maskStyle.get(ms, *sourceContext);
+        char* buffer = const_cast<char*>(text.str());
+        masker->maskValue(vt, ms, buffer, 0, text.length(), false);
+        return true;
     }
 };
 
 class CEsdlTransformOperationRemoveNode : public CEsdlTransformOperationWithoutChildren
 {
 protected:
-    StringAttr m_target;
-    Owned<ICompiledXpath> m_xpath_target;
+    XPathLiteralUnion m_target;
     bool m_all = false;
 
 public:
     CEsdlTransformOperationRemoveNode(IXmlPullParser &xpp, StartTag &stag, const StringBuffer &prefix) : CEsdlTransformOperationWithoutChildren(xpp, stag, prefix)
     {
-        const char *target = stag.getValue("target");
-        const char *xpath_target = stag.getValue("xpath_target");
-        if (isEmptyString(target) && isEmptyString(xpath_target))
-            esdlOperationError(ESDL_SCRIPT_MissingOperationAttr, m_tagname.str(), "without target", m_traceName.str(), !m_ignoreCodingErrors);
-        if (target && isWildString(target))
-            esdlOperationError(ESDL_SCRIPT_MissingOperationAttr, m_tagname.str(), "wildcard in target not yet supported", m_traceName.str(), !m_ignoreCodingErrors);
+        m_target.setRequired(stag, "target", *this);
+        if (m_target.isLiteral() && isWildString(m_target.configValue()))
+            recordError(ESDL_SCRIPT_MissingOperationAttr, "wildcard in target not yet supported");
 
-        if (!isEmptyString(xpath_target))
-            m_xpath_target.setown(compileXpath(xpath_target));
-        else if (!isEmptyString(target))
-            m_target.set(target);
         m_all = getStartTagValueBool(stag, "all", false);
     }
 
     virtual void toDBGLog() override
     {
 #if defined(_DEBUG)
-        const char *target = (m_xpath_target) ? m_xpath_target->getXpath() : m_target.str();
-        DBGLOG(">%s> %s(%s)", m_traceName.str(), m_tagname.str(), target);
+        DBGLOG(">%s> %s(%s)", m_traceName.str(), m_tagname.str(), m_target.configValue());
 #endif
     }
 
@@ -1458,15 +1898,12 @@ public:
     {
         OptionalCriticalBlock block(crit);
 
-        if ((!m_xpath_target && m_target.isEmpty()))
+        if (m_target.isEmpty())
             return false; //only here if "optional" backward compatible support for now (optional syntax errors aren't actually helpful
         try
         {
             StringBuffer path;
-            if (m_xpath_target)
-                sourceContext->evaluateAsString(m_xpath_target, path);
-            else
-                path.set(m_target);
+            m_target.get(path, *sourceContext);
 
             targetContext->remove(path, m_all);
         }
@@ -1476,11 +1913,11 @@ public:
             StringBuffer msg;
             e->errorMessage(msg);
             e->Release();
-            esdlOperationError(code, m_tagname, msg, m_traceName, !m_ignoreCodingErrors);
+            recordError(code, msg);
         }
         catch (...)
         {
-            esdlOperationError(ESDL_SCRIPT_Error, m_tagname, "unknown exception processing", m_traceName, !m_ignoreCodingErrors);
+            recordError(ESDL_SCRIPT_Error, "unknown exception processing");
         }
         return false;
     }
@@ -1495,9 +1932,8 @@ public:
 
     virtual bool doSet(IXpathContext * sourceContext, IXpathContext *targetContext, const char *value) override
     {
-        StringBuffer xpath;
-        const char *target = getTargetPath(sourceContext, xpath);
-        targetContext->ensureAppendToValue(target, value, m_required);
+        StringBuffer target;
+        targetContext->ensureAppendToValue(m_target.get(target, *sourceContext), value, m_required);
         return true;
     }
 };
@@ -1511,9 +1947,8 @@ public:
 
     virtual bool doSet(IXpathContext * sourceContext, IXpathContext *targetContext, const char *value) override
     {
-        StringBuffer xpath;
-        const char *target = getTargetPath(sourceContext, xpath);
-        targetContext->ensureAddValue(target, value, m_required);
+        StringBuffer target;
+        targetContext->ensureAddValue(m_target.get(target, *sourceContext), value, m_required);
         return true;
     }
 };
@@ -1533,9 +1968,9 @@ public:
         const char *code = stag.getValue("code");
         const char *message = stag.getValue("message");
         if (isEmptyString(code))
-            esdlOperationError(ESDL_SCRIPT_MissingOperationAttr, m_tagname, "without code", m_traceName.str(), true);
+            recordException(ESDL_SCRIPT_MissingOperationAttr, "without code");
         if (isEmptyString(message))
-            esdlOperationError(ESDL_SCRIPT_MissingOperationAttr, m_tagname, "without message", m_traceName.str(), true);
+            recordException(ESDL_SCRIPT_MissingOperationAttr, "without message");
 
         m_code.setown(compileXpath(code));
         m_message.setown(compileXpath(message));
@@ -1579,7 +2014,7 @@ public:
     {
         const char *test = stag.getValue("test");
         if (isEmptyString(test))
-            esdlOperationError(ESDL_SCRIPT_MissingOperationAttr, m_tagname, "without test", m_traceName.str(), true);
+            recordException(ESDL_SCRIPT_MissingOperationAttr, "without test");
         m_test.setown(compileXpath(test));
     }
 
@@ -1616,7 +2051,7 @@ public:
     {
         const char *select = stag.getValue("select");
         if (isEmptyString(select))
-            esdlOperationError(ESDL_SCRIPT_MissingOperationAttr, m_tagname, "without select", !m_ignoreCodingErrors);
+            recordError(ESDL_SCRIPT_MissingOperationAttr, "without select");
         m_select.setown(compileXpath(select));
     }
 
@@ -1659,12 +2094,12 @@ private:
             StringBuffer msg;
             e->errorMessage(msg);
             e->Release();
-            esdlOperationError(code, m_tagname, msg, !m_ignoreCodingErrors);
+            recordError(code, msg);
         }
         catch (...)
         {
             VStringBuffer msg("unknown exception evaluating select '%s'", m_select.get() ? m_select->getXpath() : "undefined!");
-            esdlOperationError(ESDL_SCRIPT_Error, m_tagname, msg, !m_ignoreCodingErrors);
+            recordError(ESDL_SCRIPT_Error, msg);
         }
         return xpathset;
     }
@@ -1741,7 +2176,7 @@ public:
     {
         const char *op = stag.getLocalName();
         if (isEmptyString(op)) //should never get here, we checked already, but
-            esdlOperationError(ESDL_SCRIPT_UnknownOperation, m_tagname, "unrecognized conditional missing tag name", !m_ignoreCodingErrors);
+            recordError(ESDL_SCRIPT_UnknownOperation, "unrecognized conditional missing tag name");
         //m_ignoreCodingErrors means op may still be null
         else if (!op || streq(op, "if"))
             m_op = 'i';
@@ -1750,13 +2185,13 @@ public:
         else if (streq(op, "otherwise"))
             m_op = 'o';
         else //should never get here either, but
-            esdlOperationError(ESDL_SCRIPT_UnknownOperation, m_tagname, "unrecognized conditional tag name", !m_ignoreCodingErrors);
+            recordError(ESDL_SCRIPT_UnknownOperation, "unrecognized conditional tag name");
 
         if (m_op!='o')
         {
             const char *test = stag.getValue("test");
             if (isEmptyString(test))
-                esdlOperationError(ESDL_SCRIPT_MissingOperationAttr, m_tagname, "without test", !m_ignoreCodingErrors);
+                recordError(ESDL_SCRIPT_MissingOperationAttr, "without test");
             m_test.setown(compileXpath(test));
         }
     }
@@ -1798,24 +2233,25 @@ private:
             StringBuffer msg;
             e->errorMessage(msg);
             e->Release();
-            esdlOperationError(code, m_tagname, msg, !m_ignoreCodingErrors);
+            recordError(code, msg);
         }
         catch (...)
         {
             VStringBuffer msg("unknown exception evaluating test '%s'", m_test.get() ? m_test->getXpath() : "undefined!");
-            esdlOperationError(ESDL_SCRIPT_Error, m_tagname, msg, !m_ignoreCodingErrors);
+            recordError(ESDL_SCRIPT_Error, msg);
         }
         return match;
     }
 };
 
-void loadChooseChildren(IArrayOf<IEsdlTransformOperation> &operations, IXmlPullParser &xpp, const StringBuffer &prefix, bool withVariables, bool ignoreCodingErrors, IEsdlFunctionRegister *functionRegister)
+void loadChooseChildren(IArrayOf<IEsdlTransformOperation> &operations, IXmlPullParser &xpp, const StringBuffer &prefix, bool withVariables, IEsdlOperationTraceMessenger& messenger, IEsdlFunctionRegister *functionRegister)
 {
     Owned<CEsdlTransformOperationConditional> otherwise;
 
     int type = 0;
-    while((type = xpp.next()) != XmlPullParser::END_DOCUMENT)
+    while(true)
     {
+        type = xpp.next();
         switch(type)
         {
             case XmlPullParser::START_TAG:
@@ -1828,13 +2264,12 @@ void loadChooseChildren(IArrayOf<IEsdlTransformOperation> &operations, IXmlPullP
                 else if (streq(op, "otherwise"))
                 {
                     if (otherwise)
-                        esdlOperationError(ESDL_SCRIPT_Error, op, "only 1 otherwise per choose statement allowed", ignoreCodingErrors);
+                        messenger.recordError(ESDL_SCRIPT_Error, "only 1 otherwise per choose statement allowed");
                     otherwise.setown(new CEsdlTransformOperationConditional(xpp, opTag, prefix, functionRegister));
                 }
                 break;
             }
             case XmlPullParser::END_TAG:
-            case XmlPullParser::END_DOCUMENT:
             {
                 if (otherwise)
                     operations.append(*otherwise.getClear());
@@ -1885,28 +2320,20 @@ public:
     }
 };
 
-void loadCallWithParameters(IArrayOf<IEsdlTransformOperation> &operations, IXmlPullParser &xpp, const StringBuffer &prefix, bool withVariables, bool ignoreCodingErrors, IEsdlFunctionRegister *functionRegister)
+void loadCallWithParameters(IArrayOf<IEsdlTransformOperation> &operations, IXmlPullParser &xpp, const StringBuffer &prefix, bool withVariables, IEsdlOperationTraceMessenger& messenger, IEsdlFunctionRegister *functionRegister)
 {
     int type = 0;
-    while((type = xpp.next()) != XmlPullParser::END_DOCUMENT)
+    while((type = xpp.next()) != XmlPullParser::END_TAG)
     {
-        switch(type)
+        if (XmlPullParser::START_TAG == type)
         {
-            case XmlPullParser::START_TAG:
-            {
-                StartTag opTag;
-                xpp.readStartTag(opTag);
-                const char *op = opTag.getLocalName();
-                if (streq(op, "with-param"))
-                    operations.append(*new CEsdlTransformOperationVariable(xpp, opTag, prefix, functionRegister));
-                else
-                    esdlOperationError(ESDL_SCRIPT_Error, op, "Unrecognized operation, only 'with-param' allowed within 'call-function'", ignoreCodingErrors);
-
-                break;
-            }
-            case XmlPullParser::END_TAG:
-            case XmlPullParser::END_DOCUMENT:
-                return;
+            StartTag opTag;
+            xpp.readStartTag(opTag);
+            const char *op = opTag.getLocalName();
+            if (streq(op, "with-param"))
+                operations.append(*new CEsdlTransformOperationVariable(xpp, opTag, prefix, functionRegister));
+            else
+                messenger.recordError(ESDL_SCRIPT_Error, VStringBuffer("Unrecognized operation '%s', only 'with-param' allowed within 'call-function'", op));
         }
     }
 }
@@ -1926,7 +2353,7 @@ public:
     {
         m_name.set(stag.getValue("name"));
         if (m_name.isEmpty())
-            esdlOperationError(ESDL_SCRIPT_MissingOperationAttr, "call-function", "without name parameter", m_traceName.str(), !m_ignoreCodingErrors);
+            recordError(ESDL_SCRIPT_MissingOperationAttr, "without name parameter");
         localFunctionRegister->registerEsdlFunctionCall(this);
     }
     virtual ~CEsdlTransformOperationCallFunction()
@@ -1951,9 +2378,9 @@ public:
                 //  this is intended for function calls in service level scripts which will be looked up at runtime if they aren't local to the script
                 VStringBuffer msg("function (%s) not found for %s", m_name.str(), scopeDescr);
                 if (bindLocalOnly)
-                    esdlOperationWarning(ESDL_SCRIPT_Warning, "call-function", msg.str(), m_traceName.str());
+                    recordWarning(ESDL_SCRIPT_Warning, msg.str());
                 else
-                    esdlOperationError(ESDL_SCRIPT_Error, "call-function", msg.str(), m_traceName.str(), true);
+                    recordException(ESDL_SCRIPT_Error, msg.str());
             }
         }
     }
@@ -1965,7 +2392,7 @@ public:
         IEsdlTransformOperation *callFunc = esdlFunc;
         if (!callFunc)
         {
-            IEsdlFunctionRegister *activeRegister = static_cast<IEsdlFunctionRegister*>(scriptContext->queryFunctionRegister());
+            IEsdlFunctionRegister *activeRegister = scriptContext->queryFunctionRegister();
             if (!activeRegister)
                 throw MakeStringException(ESDL_SCRIPT_Error, "Runtime function register not found (looking up %s)", m_name.str());
             callFunc = activeRegister->findEsdlFunction(m_name, false);
@@ -2005,7 +2432,7 @@ public:
     {
         const char *xpath = stag.getValue("xpath");
         if (isEmptyString(xpath))
-            esdlOperationError(ESDL_SCRIPT_MissingOperationAttr, "target", "without xpath parameter", m_traceName.str(), !m_ignoreCodingErrors);
+            recordError(ESDL_SCRIPT_MissingOperationAttr, "without xpath parameter");
 
         m_xpath.setown(compileXpath(xpath));
         m_required = getStartTagValueBool(stag, "required", m_required);
@@ -2104,7 +2531,7 @@ public:
     {
         const char *xpath = stag.getValue("xpath");
         if (isEmptyString(xpath))
-            esdlOperationError(ESDL_SCRIPT_MissingOperationAttr, "target", "without xpath parameter", m_traceName.str(), !m_ignoreCodingErrors);
+            recordError(ESDL_SCRIPT_MissingOperationAttr, "without xpath parameter");
 
         m_xpath.setown(compileXpath(xpath));
         m_required = getStartTagValueBool(stag, "required", m_required);
@@ -2157,14 +2584,14 @@ public:
     {
         m_name.set(stag.getValue("name"));
         if (m_name.isEmpty())
-            esdlOperationError(ESDL_SCRIPT_MissingOperationAttr, "element", "without name parameter", m_traceName.str(), !m_ignoreCodingErrors);
+            recordError(ESDL_SCRIPT_MissingOperationAttr, "without name parameter");
         if (m_traceName.isEmpty())
             m_traceName.set(m_name);
 
         if (!validateXMLTag(m_name))
         {
             VStringBuffer msg("with invalid element name '%s'", m_name.str());
-            esdlOperationError(ESDL_SCRIPT_MissingOperationAttr, "element", msg.str(), m_traceName.str(), !m_ignoreCodingErrors);
+            recordError(ESDL_SCRIPT_MissingOperationAttr, msg.str());
         }
 
         m_nsuri.set(stag.getValue("namespace"));
@@ -2191,24 +2618,16 @@ public:
     }
 };
 
-void createEsdlTransformOperations(IArrayOf<IEsdlTransformOperation> &operations, IXmlPullParser &xpp, const StringBuffer &prefix, bool withVariables, bool ignoreCodingErrors, IEsdlFunctionRegister *functionRegister)
+void createEsdlTransformOperations(IArrayOf<IEsdlTransformOperation> &operations, IXmlPullParser &xpp, const StringBuffer &prefix, bool withVariables, IEsdlOperationTraceMessenger& messenger, IEsdlFunctionRegister *functionRegister)
 {
     int type = 0;
-    while((type = xpp.next()) != XmlPullParser::END_DOCUMENT)
+    while((type = xpp.next()) != XmlPullParser::END_TAG)
     {
-        switch(type)
+        if (XmlPullParser::START_TAG == type)
         {
-            case XmlPullParser::START_TAG:
-            {
-                Owned<IEsdlTransformOperation> operation = createEsdlTransformOperation(xpp, prefix, withVariables, ignoreCodingErrors, functionRegister, false);
-                if (operation)
-                    operations.append(*operation.getClear());
-                break;
-            }
-            case XmlPullParser::END_TAG:
-                return;
-            case XmlPullParser::END_DOCUMENT:
-                return;
+            Owned<IEsdlTransformOperation> operation = createEsdlTransformOperation(xpp, prefix, withVariables, messenger, functionRegister, false);
+            if (operation)
+                operations.append(*operation.getClear());
         }
     }
 }
@@ -2224,7 +2643,7 @@ public:
     {
         m_name.set(stag.getValue("name"));
         if (m_name.isEmpty())
-            esdlOperationError(ESDL_SCRIPT_MissingOperationAttr, "function", "without name parameter", m_traceName.str(), !m_ignoreCodingErrors);
+            recordError(ESDL_SCRIPT_MissingOperationAttr, "without name parameter");
         m_childScopeType = XpathVariableScopeType::isolated;
     }
 
@@ -2245,7 +2664,554 @@ public:
     }
 };
 
-IEsdlTransformOperation *createEsdlTransformOperation(IXmlPullParser &xpp, const StringBuffer &prefix, bool withVariables, bool ignoreCodingErrors, IEsdlFunctionRegister *functionRegister, bool canDeclareFunctions)
+/**
+ * @brief Helper structure used by both tx-summary-value and tx-summary-timer.
+ *
+ * There is common data used by both operations. Because one operation is childless and the other
+ * allows children, they cannot have a common base class. Instead each contains an instance of this
+ * structure to provide common handling of the common data.
+ */
+struct TxSummaryCoreInfo
+{
+    StringAttr m_name;
+    unsigned   m_level = LogMin;
+    unsigned   m_groups = TXSUMMARY_GRP_ENTERPRISE;
+
+    TxSummaryCoreInfo(StartTag& stag, IEsdlOperationTraceMessenger& messenger)
+    {
+        m_name.set(stag.getValue("name"));
+        if (m_name.isEmpty())
+            messenger.recordError(ESDL_SCRIPT_MissingOperationAttr, "without name");
+        const char* level = stag.getValue("level");
+        if (!isEmptyString(level))
+        {
+            if (strieq(level, "min"))
+                m_level = LogMin;
+            else if (strieq(level, "normal"))
+                m_level = LogNormal;
+            else if (strieq(level, "max"))
+                m_level = LogMax;
+            else if (TokenDeserializer().deserialize(level, m_level) != Deserialization_SUCCESS || m_level < LogMin || m_level > LogMax)
+                messenger.recordError(ESDL_SCRIPT_InvalidOperationAttr, "invalid level");
+        }
+        const char* coreGroup = stag.getValue("core_group");
+        if (!isEmptyString(coreGroup) && strToBool(coreGroup))
+            m_groups |= TXSUMMARY_GRP_CORE;
+    }
+};
+
+static TokenDeserializer s_deserializer;
+
+class CEsdlTransformOperationTxSummaryValue : public CEsdlTransformOperationWithoutChildren
+{
+protected:
+    enum Type { Text, Signed, Unsigned, Decimal };
+    enum Mode { Append, Set };
+    TxSummaryCoreInfo     m_info;
+    Owned<ICompiledXpath> m_value;
+    Type                  m_type = Text;
+    Mode                  m_mode = Append;
+
+public:
+    CEsdlTransformOperationTxSummaryValue(IXmlPullParser& xpp, StartTag& stag, const StringBuffer& prefix)
+        : CEsdlTransformOperationWithoutChildren(xpp, stag, prefix)
+        , m_info(stag, *this)
+    {
+        m_value.setown(compileOptionalXpath(stag.getValue("select")));
+        if (!m_value)
+            recordError(ESDL_SCRIPT_MissingOperationAttr, "without select");
+        const char* type = stag.getValue("type");
+        if (!isEmptyString(type))
+        {
+            if (strieq(type, "signed"))
+                m_type = Signed;
+            else if (strieq(type, "unsigned"))
+                m_type = Unsigned;
+            else if (strieq(type, "decimal"))
+                m_type = Decimal;
+            else if (!strieq(type, "text"))
+                recordError(ESDL_SCRIPT_InvalidOperationAttr, "invalid type");
+        }
+        const char* mode = stag.getValue("mode");
+        if (!isEmptyString(mode))
+        {
+            if (strieq(mode, "set"))
+                m_mode = Set;
+            else if (!strieq(mode, "append"))
+                recordError(ESDL_SCRIPT_InvalidOperationAttr, VStringBuffer("invalid mode '%s'", mode));
+        }
+    }
+
+    virtual ~CEsdlTransformOperationTxSummaryValue()
+    {
+    }
+
+    void injectText(const char* value, CTxSummary* txSummary) const
+    {
+        switch (m_mode)
+        {
+        case Append:
+            if (!txSummary->append(m_info.m_name, value, m_info.m_level, m_info.m_groups))
+                UWARNLOG("script operation %s did not append '%s=%s' [text]; name is malformed or is in use", m_tagname.str(), m_info.m_name.str(), value);
+            break;
+        case Set:
+            if (!txSummary->set(m_info.m_name, value, m_info.m_level, m_info.m_groups))
+                UWARNLOG("script operation %s did not set '%s=%s' [text]; name is malformed or identifies a cumulative timer", m_tagname.str(), m_info.m_name.str(), value);
+            break;
+        default:
+            break;
+        }
+    }
+    void injectSigned(const char* rawValue, CTxSummary* txSummary) const
+    {
+        signed long long sll;
+        if (s_deserializer.deserialize(rawValue, sll) == Deserialization_SUCCESS)
+        {
+            switch (m_mode)
+            {
+            case Append:
+                if (!txSummary->append(m_info.m_name, sll, m_info.m_level, m_info.m_groups))
+                    UWARNLOG("script operation %s did not append '%s=%s' [signed]; name is malformed or is in use", m_tagname.str(), m_info.m_name.str(), rawValue);
+                break;
+            case Set:
+                if (!txSummary->set(m_info.m_name, sll, m_info.m_level, m_info.m_groups))
+                    UWARNLOG("script operation %s did not set '%s=%s' [signed]; name is malformed or identifies a cumulative timer", m_tagname.str(), m_info.m_name.str(), rawValue);
+                break;
+            default:
+                break;
+            }
+        }
+        else
+            UWARNLOG("script operation %s did not set '%s=%s'; not a signed integer", m_tagname.str(), m_info.m_name.str(), rawValue);
+    }
+    void injectUnsigned(const char* rawValue, CTxSummary* txSummary) const
+    {
+        unsigned long long ull;
+        if (s_deserializer.deserialize(rawValue, ull) == Deserialization_SUCCESS)
+        {
+            switch (m_mode)
+            {
+            case Append:
+                if (!txSummary->append(m_info.m_name, ull, m_info.m_level, m_info.m_groups))
+                    UWARNLOG("script operation %s did not append '%s=%s' [unsigned]; name is malformed or is in use", m_tagname.str(), m_info.m_name.str(), rawValue);
+                break;
+            case Set:
+                if (!txSummary->set(m_info.m_name, ull, m_info.m_level, m_info.m_groups))
+                    UWARNLOG("script operation %s did not set '%s=%s' [unsigned]; name is malformed or identifies a cumulative timer", m_tagname.str(), m_info.m_name.str(), rawValue);
+                break;
+            default:
+                break;
+            }
+        }
+        else
+            UWARNLOG("script operation %s did not set '%s=%s'; not an unsigned integer", m_tagname.str(), m_info.m_name.str(), rawValue);
+    }
+    void injectDecimal(const char* rawValue, CTxSummary* txSummary) const
+    {
+        double d;
+        if (s_deserializer.deserialize(rawValue, d) == Deserialization_SUCCESS)
+        {
+            switch (m_mode)
+            {
+            case Append:
+                if (!txSummary->append(m_info.m_name, d, m_info.m_level, m_info.m_groups))
+                    UWARNLOG("script operation %s did not append '%s=%s' [decimal]; name is malformed or is in use", m_tagname.str(), m_info.m_name.str(), rawValue);
+                break;
+            case Set:
+                if (!txSummary->set(m_info.m_name, d, m_info.m_level, m_info.m_groups))
+                    UWARNLOG("script operation %s did not set '%s=%s' [decimal]; name is malformed or identifies a cumulative timer", m_tagname.str(), m_info.m_name.str(), rawValue);
+                break;
+            default:
+                break;
+            }
+        }
+        else
+            UWARNLOG("script operation %s did not set '%s=%s'; not decimal", m_tagname.str(), m_info.m_name.str(), rawValue);
+    }
+    void injectValue(const char* rawValue, CTxSummary* txSummary)
+    {
+        switch (m_type)
+        {
+        case Text:
+            injectText(rawValue, txSummary);
+            break;
+        case Signed:
+            injectSigned(rawValue, txSummary);
+            break;
+        case Unsigned:
+            injectUnsigned(rawValue, txSummary);
+            break;
+        case Decimal:
+            injectDecimal(rawValue, txSummary);
+            break;
+        default:
+            break;
+        }
+    }
+    virtual bool exec(CriticalSection* crit, IInterface* preparedForAsync, IEsdlScriptContext* scriptContext, IXpathContext* targetContext, IXpathContext* sourceContext) override
+    {
+        IEspContext* espCtx = scriptContext->queryEspContext();
+        CTxSummary* txSummary = (espCtx ? espCtx->queryTxSummary() : nullptr);
+        if (!txSummary)
+            return true;
+        OptionalCriticalBlock block(crit);
+
+        if (m_value)
+        {
+            StringBuffer value;
+            sourceContext->evaluateAsString(m_value, value);
+            injectValue(value, txSummary);
+        }
+        return true;
+    }
+
+    virtual void toDBGLog () override
+    {
+    #if defined(_DEBUG)
+        DBGLOG(">%s> %s(%s)", m_traceName.str(), m_tagname.str(), m_info.m_name.str());
+    #endif
+    }
+};
+
+class CEsdlTransformOperationTxSummaryTimer : public CEsdlTransformOperationWithChildren
+{
+protected:
+    enum Mode { Append, Set, Accumulate };
+    TxSummaryCoreInfo m_info;
+    Mode              m_mode = Append;
+
+public:
+    CEsdlTransformOperationTxSummaryTimer(IXmlPullParser& xpp, StartTag& stag, const StringBuffer& prefix, IEsdlFunctionRegister* functionRegister)
+        : CEsdlTransformOperationWithChildren(xpp, stag, prefix, true, functionRegister, nullptr)
+        , m_info(stag, *this)
+    {
+        const char* mode = stag.getValue("mode");
+        if (!isEmptyString(mode))
+        {
+            if (strieq(mode, "set"))
+                m_mode = Set;
+            else if (strieq(mode, "accumulate"))
+                m_mode = Accumulate;
+            else if (!strieq(mode, "append"))
+                recordError(ESDL_SCRIPT_InvalidOperationAttr, VStringBuffer("invalid mode '%s'", mode));
+        }
+    }
+
+    virtual ~CEsdlTransformOperationTxSummaryTimer()
+    {
+    }
+
+    virtual bool exec(CriticalSection* crit, IInterface* preparedForAsync, IEsdlScriptContext* scriptContext, IXpathContext* targetContext, IXpathContext* sourceContext) override
+    {
+        IEspContext* espCtx = scriptContext->queryEspContext();
+        CTxSummary* txSummary = (espCtx ? espCtx->queryTxSummary() : nullptr);
+        if (!txSummary)
+            return true;
+        StringBuffer value;
+        OptionalCriticalBlock block(crit);
+        CTimeMon timer;
+        processChildren(scriptContext, targetContext, sourceContext);
+        unsigned delta = timer.elapsed();
+        switch (m_mode)
+        {
+        case Append:
+            if (!txSummary->append(m_info.m_name, delta, m_info.m_level, m_info.m_groups))
+                UWARNLOG("script operation %s did not append '%s=%u'; name is malformed or is in use", m_tagname.str(), m_info.m_name.str(), delta);
+            break;
+        case Set:
+            if (!txSummary->set(m_info.m_name, delta, m_info.m_level, m_info.m_groups))
+                UWARNLOG("script operation %s did not set '%s=%u'; name is malformed or identifies a cumulative timer", m_tagname.str(), m_info.m_name.str(), delta);
+            break;
+        case Accumulate:
+            if (!txSummary->updateTimer(m_info.m_name, delta, m_info.m_level, m_info.m_groups))
+                UWARNLOG("script operation %s did not add %ums to cumulative timer '%s'; name is malformed or identifies a scalar value", m_tagname.str(), delta,  m_info.m_name.str());
+            break;
+        default:
+            break;
+        }
+        return true;
+    }
+
+    virtual void toDBGLog () override
+    {
+    #if defined(_DEBUG)
+        DBGLOG(">>>%s> %s %s >>>>", m_traceName.str(), m_tagname.str(), m_info.m_name.str());
+        CEsdlTransformOperationWithChildren::toDBGLog();
+        DBGLOG (">>>>>>>>>>> %s >>>>>>>>>>", m_tagname.str());
+    #endif
+    }
+};
+
+class CEsdlTransformOperationDelay : public CEsdlTransformOperationWithoutChildren
+{
+protected:
+    unsigned m_millis = 1;
+public:
+    CEsdlTransformOperationDelay(IXmlPullParser& xpp, StartTag& stag, const StringBuffer& prefix)
+        : CEsdlTransformOperationWithoutChildren(xpp, stag, prefix)
+    {
+        const char* millis = stag.getValue("millis");
+        if (!isEmptyString(millis) && s_deserializer.deserialize(millis, m_millis) != Deserialization_SUCCESS)
+            recordError(ESDL_SCRIPT_InvalidOperationAttr, "invalid millis");
+    }
+
+    virtual ~CEsdlTransformOperationDelay()
+    {
+    }
+
+    virtual bool exec(CriticalSection* crit, IInterface* preparedForAsync, IEsdlScriptContext* scriptContext, IXpathContext* targetContext, IXpathContext* sourceContext) override
+    {
+        OptionalCriticalBlock block(crit);
+        MilliSleep(m_millis);
+        return true;
+    }
+
+    virtual void toDBGLog () override
+    {
+    #if defined(_DEBUG)
+        DBGLOG(">%s> %s", m_traceName.str(), m_tagname.str());
+    #endif
+    }
+};
+
+class CEsdlTransformOperationUpdateMaskingContext : public CEsdlTransformOperationBase
+{
+    class Update : public CEsdlTransformOperationWithoutChildren
+    {
+    public: // IEsdlTransformOperation
+        virtual bool exec(CriticalSection* crit, IInterface* preparedForAsync, IEsdlScriptContext* scriptContext, IXpathContext* targetContext, IXpathContext* sourceContext) override
+        {
+            return true;
+        }
+    public:
+        virtual bool apply(IDataMaskingProfileContext& masker, IXpathContext& sourceContext) const = 0;
+        using CEsdlTransformOperationWithoutChildren::CEsdlTransformOperationWithoutChildren;
+    };
+    class SetProperty : public Update
+    {
+    public:
+        virtual bool apply(IDataMaskingProfileContext& masker, IXpathContext& sourceContext) const override
+        {
+            StringBuffer n, v;
+            return masker.setProperty(m_name.get(n, sourceContext), m_value.get(v, sourceContext));
+        }
+        virtual void toDBGLog() override
+        {
+        #if defined(_DEBUG)
+            DBGLOG(">%s> %s %s=%s", m_traceName.str(), m_tagname.str(), m_name.configValue(), m_value.configValue());
+        #endif
+        }
+    private:
+        XPathLiteralUnion m_name;
+        XPathLiteralUnion m_value;
+    public:
+        SetProperty(IXmlPullParser& xpp, StartTag& stag, const StringBuffer& prefix)
+            : Update(xpp, stag, prefix)
+        {
+            m_name.setRequired(stag, "name", *this);
+            m_value.setRequired(stag, "value", *this);
+        }
+    };
+    class RemoveProperty : public Update
+    {
+    public:
+        virtual bool apply(IDataMaskingProfileContext& target, IXpathContext& sourceContext) const override
+        {
+            StringBuffer n;
+            return target.removeProperty(m_name.get(n, sourceContext));
+        }
+        virtual void toDBGLog() override
+        {
+        #if defined(_DEBUG)
+            DBGLOG(">%s> %s %s", m_traceName.str(), m_tagname.str(), m_name.configValue());
+        #endif
+        }
+    private:
+        XPathLiteralUnion m_name;
+    public:
+        RemoveProperty(IXmlPullParser& xpp, StartTag& stag, const StringBuffer& prefix)
+            : Update(xpp, stag, prefix)
+        {
+            m_name.setRequired(stag, "name", *this);
+        }
+    };
+private:
+    using Updates = std::list<Owned<Update>>;
+    Updates m_updates;
+public:
+    CEsdlTransformOperationUpdateMaskingContext(IXmlPullParser& xpp, StartTag& stag, const StringBuffer& prefix)
+        : CEsdlTransformOperationBase(xpp, stag, prefix)
+    {
+        int type = 0;
+        while((type = xpp.next()) != XmlPullParser::END_TAG)
+        {
+            if (XmlPullParser::START_TAG == type)
+            {
+                StartTag stag;
+                xpp.readStartTag(stag);
+                const char *op = stag.getLocalName();
+                if (isEmptyString(op))
+                    recordError(ESDL_SCRIPT_InvalidOperationAttr, "invalid child operation");
+                if (streq(op, "set"))
+                    m_updates.emplace_back(new SetProperty(xpp, stag, prefix));
+                else if (streq(op, "remove"))
+                    m_updates.emplace_back(new RemoveProperty(xpp, stag, prefix));
+                else
+                {
+                    recordError(ESDL_SCRIPT_InvalidOperationAttr, VStringBuffer("invalid child operation '%s'", op));
+                    xpp.skipSubTreeEx();
+                }
+            }
+        }
+    }
+
+    virtual bool exec(CriticalSection* crit, IInterface* preparedForAsync, IEsdlScriptContext* scriptContext, IXpathContext* targetContext, IXpathContext* sourceContext) override
+    {
+        Owned<IDataMaskingProfileContext> masker(scriptContext->getMasker());
+        if (masker)
+        {
+            for (const Owned<Update>& u : m_updates)
+                u->apply(*masker, *sourceContext);
+        }
+        return true;
+    }
+
+    virtual void toDBGLog () override
+    {
+    #if defined(_DEBUG)
+        DBGLOG(">>>%s> %s  >>>>", m_traceName.str(), m_tagname.str());
+        for (const Owned<Update>& u : m_updates)
+            u->toDBGLog();
+        DBGLOG (">>>>>>>>>>> %s >>>>>>>>>>", m_tagname.str());
+    #endif
+    }
+};
+
+class CEsdlTransformOperationMaskingContextScope : public CEsdlTransformOperationWithChildren
+{
+public:
+    CEsdlTransformOperationMaskingContextScope(IXmlPullParser& xpp, StartTag& stag, const StringBuffer& prefix, IEsdlFunctionRegister* functionRegister)
+        : CEsdlTransformOperationWithChildren(xpp, stag, prefix, true, functionRegister, nullptr)
+    {
+    }
+
+    virtual ~CEsdlTransformOperationMaskingContextScope()
+    {
+    }
+
+    virtual bool exec(CriticalSection* crit, IInterface* preparedForAsync, IEsdlScriptContext* scriptContext, IXpathContext* targetContext, IXpathContext* sourceContext) override
+    {
+        EsdlScriptMaskerScope maskerScope(scriptContext);
+        processChildren(scriptContext, targetContext, sourceContext);
+        return true;
+    }
+
+    virtual void toDBGLog () override
+    {
+    #if defined(_DEBUG)
+        DBGLOG(">>>%s> %s  >>>>", m_traceName.str(), m_tagname.str());
+        CEsdlTransformOperationWithChildren::toDBGLog();
+        DBGLOG (">>>>>>>>>>> %s >>>>>>>>>>", m_tagname.str());
+    #endif
+    }
+};
+
+class CEsdlTransformOperationSetTraceOptions : public CEsdlTransformOperationWithoutChildren
+{
+private:
+    Owned<ICompiledXpath> m_enabled;
+    Owned<ICompiledXpath> m_locked;
+
+public:
+    CEsdlTransformOperationSetTraceOptions(IXmlPullParser& xpp, StartTag& stag, const StringBuffer& prefix)
+        : CEsdlTransformOperationWithoutChildren(xpp, stag, prefix)
+    {
+        const char* enabled = stag.getValue("enabled");
+        if (!isEmptyString(enabled))
+            m_enabled.setown(compileXpath(enabled));
+
+        const char* locked = stag.getValue("locked");
+        if (!isEmptyString(locked))
+            m_locked.setown(compileXpath(locked));
+        
+        if (!m_enabled && !m_locked)
+            recordError(ESDL_SCRIPT_MissingOperationAttr, "missing all options");
+    }
+
+    ~CEsdlTransformOperationSetTraceOptions()
+    {
+    }
+
+    virtual bool exec(CriticalSection* crit, IInterface* preparedForAsync, IEsdlScriptContext* scriptContext, IXpathContext* targetContext, IXpathContext* sourceContext) override
+    {
+        bool locked = scriptContext->isTraceLocked();
+        if ((m_enabled || m_locked) && !locked)
+        {
+            bool enabled = (m_enabled ? sourceContext->evaluateAsBoolean(m_enabled) : scriptContext->isTraceEnabled());
+            if (m_locked)
+                locked = sourceContext->evaluateAsBoolean(m_locked);
+            scriptContext->setTraceOptions(enabled, locked);
+        }
+        return true;
+    }
+
+    virtual void toDBGLog() override
+    {
+        #if defined(_DEBUG)
+            DBGLOG(">%s> %s", m_traceName.str(), m_tagname.str());
+        #endif
+    }
+};
+
+class CEsdlTransformOperationTraceOptionsScope : public CEsdlTransformOperationWithChildren
+{
+private:
+    Owned<ICompiledXpath> m_enabled;
+    Owned<ICompiledXpath> m_locked;
+
+public:
+    CEsdlTransformOperationTraceOptionsScope(IXmlPullParser& xpp, StartTag& stag, const StringBuffer& prefix, IEsdlFunctionRegister* functionRegister)
+        : CEsdlTransformOperationWithChildren(xpp, stag, prefix, true, functionRegister, nullptr)
+    {
+        const char* enabled = stag.getValue("enabled");
+        if (!isEmptyString(enabled))
+            m_enabled.setown(compileXpath(enabled));
+
+        const char* locked = stag.getValue("locked");
+        if (!isEmptyString(locked))
+            m_locked.setown(compileXpath(locked));
+    }
+
+    virtual ~CEsdlTransformOperationTraceOptionsScope()
+    {
+    }
+
+    virtual bool exec(CriticalSection* crit, IInterface* preparedForAsync, IEsdlScriptContext* scriptContext, IXpathContext* targetContext, IXpathContext* sourceContext) override
+    {
+        EsdlScriptTraceOptionsScope traceOptionsScope(scriptContext);
+        bool locked = scriptContext->isTraceLocked();
+        if ((m_enabled || m_locked) && !locked)
+        {
+            bool enabled = (m_enabled ? sourceContext->evaluateAsBoolean(m_enabled) : scriptContext->isTraceEnabled());
+            if (m_locked)
+                locked = sourceContext->evaluateAsBoolean(m_locked);
+            scriptContext->setTraceOptions(enabled, locked);
+        }
+        processChildren(scriptContext, targetContext, sourceContext);
+        return true;
+    }
+
+    virtual void toDBGLog () override
+    {
+    #if defined(_DEBUG)
+        DBGLOG(">>>%s> %s  >>>>", m_traceName.str(), m_tagname.str());
+        CEsdlTransformOperationWithChildren::toDBGLog();
+        DBGLOG (">>>>>>>>>>> %s >>>>>>>>>>", m_tagname.str());
+    #endif
+    }
+};
+
+IEsdlTransformOperation *createEsdlTransformOperation(IXmlPullParser &xpp, const StringBuffer &prefix, bool withVariables, IEsdlOperationTraceMessenger& messenger, IEsdlFunctionRegister *functionRegister, bool canDeclareFunctions)
 {
     StartTag stag;
     xpp.readStartTag(stag);
@@ -2257,7 +3223,7 @@ IEsdlTransformOperation *createEsdlTransformOperation(IXmlPullParser &xpp, const
         if (streq(op, "function"))
         {
             if (!canDeclareFunctions)
-                esdlOperationError(ESDL_SCRIPT_Error, "function", "can only declare functions at root level", !ignoreCodingErrors);
+                messenger.recordError(ESDL_SCRIPT_Error, "can only declare functions at root level");
             Owned<CEsdlTransformOperationFunction> esdlFunc = new CEsdlTransformOperationFunction(xpp, stag, prefix, functionRegister);
             functionRegister->registerEsdlFunction(esdlFunc->m_name.str(), static_cast<IEsdlTransformOperation*>(esdlFunc.get()));
             return nullptr;
@@ -2316,14 +3282,30 @@ IEsdlTransformOperation *createEsdlTransformOperation(IXmlPullParser &xpp, const
         return new CEsdlTransformOperationHttpPostXml(xpp, stag, prefix, functionRegister);
     if (streq(op, "mysql"))
         return new CEsdlTransformOperationMySqlCall(xpp, stag, prefix);
-    if (streq(op, "trace"))
-        return new CEsdlTransformOperationTrace(xpp, stag, prefix);
+    if (streq(op, "trace-content") || streq(op, "trace"))
+        return new CEsdlTransformOperationTraceContent(xpp, stag, prefix);
+    if (streq(op, "trace-value"))
+        return new CEsdlTransformOperationTraceValue(xpp, stag, prefix);
     if (streq(op, "call-function"))
         return new CEsdlTransformOperationCallFunction(xpp, stag, prefix, functionRegister);
     if (streq(op, "synchronize"))
         return new CEsdlTransformOperationSynchronize(xpp, stag, prefix, functionRegister);
     if (streq(op, "script"))
         return new CEsdlTransformOperationScript(xpp, stag, prefix, functionRegister);
+    if (streq(op, "tx-summary-value"))
+        return new CEsdlTransformOperationTxSummaryValue(xpp, stag, prefix);
+    if (streq(op, "tx-summary-timer"))
+        return new CEsdlTransformOperationTxSummaryTimer(xpp, stag, prefix, functionRegister);
+    if (streq(op, "delay"))
+        return new CEsdlTransformOperationDelay(xpp, stag, prefix);
+    if (streq(op, "update-masking-context"))
+        return new CEsdlTransformOperationUpdateMaskingContext(xpp, stag, prefix);
+    if (streq(op, "masking-context-scope"))
+        return new CEsdlTransformOperationMaskingContextScope(xpp, stag, prefix, functionRegister);
+    if (streq(op, "set-trace-options"))
+        return new CEsdlTransformOperationSetTraceOptions(xpp, stag, prefix);
+    if (streq(op, "trace-options-scope"))
+        return new CEsdlTransformOperationTraceOptionsScope(xpp, stag, prefix, functionRegister);
     return nullptr;
 }
 
@@ -2386,6 +3368,32 @@ public:
     }
 };
 
+class CEsdlOperationDefaultTraceMessenger : public IEsdlOperationTraceMessenger
+{
+public:
+    virtual void recordWarning(int code, const char* msg) const override
+    {
+        esdlOperationWarning(code, m_tagname, msg, m_traceName);
+    }
+    virtual void recordError(int code, const char* msg) const override
+    {
+        esdlOperationError(code, m_tagname, msg, m_traceName, true);
+    }
+    virtual void recordException(int code, const char* msg) const override
+    {
+        esdlOperationError(code, m_tagname, msg, m_traceName, true);
+    }
+protected:
+    const char* m_tagname;
+    const StringAttr& m_traceName;
+public:
+    CEsdlOperationDefaultTraceMessenger(const char* tagname, const StringAttr& traceName)
+        : m_tagname(tagname)
+        , m_traceName(traceName)
+    {
+    }
+};
+
 class CEsdlCustomTransform : public CInterfaceOf<IEsdlCustomTransform>
 {
 private:
@@ -2421,21 +3429,15 @@ public:
             it++;
         }
 
+        CEsdlOperationDefaultTraceMessenger defaultMessenger(tag, m_name);
         int type = 0;
-        while((type = xpp.next()) != XmlPullParser::END_DOCUMENT)
+        while((type = xpp.next()) != XmlPullParser::END_TAG)
         {
-            switch(type)
+            if (XmlPullParser::START_TAG == type)
             {
-                case XmlPullParser::START_TAG:
-                {
-                    Owned<IEsdlTransformOperation> operation = createEsdlTransformOperation(xpp, m_prefix, true, false, &functionRegister, true);
-                    if (operation)
-                        m_operations.append(*operation.getClear());
-                    break;
-                }
-                case XmlPullParser::END_TAG:
-                case XmlPullParser::END_DOCUMENT:
-                    return;
+                Owned<IEsdlTransformOperation> operation = createEsdlTransformOperation(xpp, m_prefix, true, defaultMessenger, &functionRegister, true);
+                if (operation)
+                    m_operations.append(*operation.getClear());
             }
         }
     }
@@ -2489,7 +3491,7 @@ public:
             sourceContext->setLocation(m_source, true);
         ForEachItemIn(i, m_operations)
             m_operations.item(i).process(scriptContext, targetXpath, sourceContext);
-        scriptContext->cleanupBetweenScripts();
+        scriptContext->cleanupTemporaries();
     }
     void bindFunctionCalls(const char *scopeDescr, IEsdlFunctionRegister *activeFunctionRegister, bool bindLocalOnly)
     {
@@ -2548,7 +3550,7 @@ void processServiceAndMethodTransforms(IEsdlScriptContext * scriptCtx, std::init
     if (isEmptyString(reqtype))
         throw MakeStringException(ESDL_SCRIPT_Error, "ESDL script request name not set");
 
-    IEspContext *context = reinterpret_cast<IEspContext*>(scriptCtx->queryEspContext());
+    IEspContext *context = scriptCtx->queryEspContext();
 
     if (level >= LogMax)
     {
@@ -2624,13 +3626,8 @@ void processServiceAndMethodTransforms(IEsdlScriptContext * scriptCtx, std::init
     }
     else
     {
-        // enable transforms to distinguish secure versus insecure requests
-        sourceContext->addInputValue("espTransactionID", "");
-        sourceContext->addInputValue("espUserName", "");
-        sourceContext->addInputValue("espUserRealm", "");
-        sourceContext->addInputValue("espUserPeer", "");
-        sourceContext->addInputValue("espUserStatus", "");
-        sourceContext->addInputValue("espUserStatusString", "");
+        // Input values do not default to empty when added. They default to empty when
+        // imported as parameters. Setting empty here serves no purpose.
     }
 
     StringBuffer defaultTarget; //This default gives us backward compatibility with only being able to write to the actual request
@@ -2771,22 +3768,16 @@ public:
     {
         int type;
         StartTag childTag;
-        while((type = xpp.next()) != XmlPullParser::END_DOCUMENT)
+        while((type = xpp.next()) != XmlPullParser::END_TAG)
         {
-            switch (type)
+            if (XmlPullParser::START_TAG == type)
             {
-                case XmlPullParser::START_TAG:
-                {
-                    xpp.readStartTag(childTag);
-                    const char *tagname = childTag.getLocalName();
-                    if (streq("Scripts", tagname) || streq("Transforms", tagname)) //allow nesting of container structures for maximum compatability
-                        add(xpp, childTag, foundNonLegacyTransforms);
-                    else
-                        addChild(xpp, childTag,foundNonLegacyTransforms);
-                    break;
-                }
-                case XmlPullParser::END_TAG:
-                    return;
+                xpp.readStartTag(childTag);
+                const char *tagname = childTag.getLocalName();
+                if (streq("Scripts", tagname) || streq("Transforms", tagname)) //allow nesting of container structures for maximum compatability
+                    add(xpp, childTag, foundNonLegacyTransforms);
+                else
+                    addChild(xpp, childTag,foundNonLegacyTransforms);
             }
         }
     }
@@ -2920,6 +3911,10 @@ public:
     }
 };
 
+esdl_decl IEsdlScriptContext* createEsdlScriptContext(IEspContext* espCtx, IEsdlFunctionRegister* functionRegister, IDataMaskingEngine* engine)
+{
+    return new CEsdlScriptContext(espCtx, functionRegister, engine);
+}
 esdl_decl IEsdlTransformMethodMap *createEsdlTransformMethodMap()
 {
     return new CEsdlTransformMethodMap();

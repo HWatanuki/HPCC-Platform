@@ -127,7 +127,7 @@ bool CThorInput::isFastThrough() const
 // 
 
 CSlaveActivity::CSlaveActivity(CGraphElementBase *_container, const StatisticsMapping &statsMapping)
-    : CActivityBase(_container, statsMapping), CEdgeProgress(this)
+    : CActivityBase(_container, statsMapping), CEdgeProgress(this), inactiveStats(statsMapping)
 {
     data = NULL;
 }
@@ -567,10 +567,24 @@ void CSlaveActivity::serializeStats(MemoryBuffer &mb)
 {
     CriticalBlock b(crit); // JCSMORE not sure what this is protecting..
 
+    // Collates previously collected static(inactive) stats with live stats collected via a virtual callback (gatherActiveStats),
+    // and updates the activity's 'stats'.
+    // The callback fetches the current state of the activity's stats, called within a critical section ('statsCs'),
+    // which the activity should use to protect any objects it uses whilst stats are being collected.
+
+    CRuntimeStatisticCollection serializedStats(inactiveStats);
+
+    {
+        CriticalBlock block(statsCs);
+        gatherActiveStats(serializedStats);
+    }
+
+    queryCodeContext()->gatherStats(serializedStats);
+
     // JCS->GH - should these be serialized as cycles, and a different mapping used on master?
-    stats.setStatistic(StTimeLocalExecute, (unsigned __int64)cycle_to_nanosec(queryLocalCycles()));
-    stats.setStatistic(StTimeBlocked, (unsigned __int64)cycle_to_nanosec(queryBlockedCycles()));
-    stats.serialize(mb);
+    serializedStats.setStatistic(StTimeLocalExecute, (unsigned __int64)cycle_to_nanosec(queryLocalCycles()));
+    serializedStats.setStatistic(StTimeBlocked, (unsigned __int64)cycle_to_nanosec(queryBlockedCycles()));
+    serializedStats.serialize(mb);
     ForEachItemIn(i, outputs)
     {
         IThorDataLink *output = queryOutput(i);
@@ -1288,7 +1302,8 @@ bool CSlaveGraph::serializeStats(MemoryBuffer &mb)
 
 void CSlaveGraph::serializeDone(MemoryBuffer &mb)
 {
-    mb.append(queryGraphId());
+    graph_id gid = queryGraphId();
+    mb.append(gid);
     unsigned cPos = mb.length();
     unsigned count=0;
     mb.append(count);
@@ -1316,6 +1331,17 @@ void CSlaveGraph::serializeDone(MemoryBuffer &mb)
         }
     }
     mb.writeDirect(cPos, sizeof(count), &count);
+
+    if (!owner)
+        queryJob().queryTempHandler()->serializeUsageStats(mb, gid);
+    else
+    {
+        IGraphTempHandler *tempHandler = queryTempHandler(false);
+        if (tempHandler)
+            tempHandler->serializeUsageStats(mb, gid);
+        else
+            IGraphTempHandler::serializeNullUsageStats(mb);
+    }
 }
 
 void CSlaveGraph::getDone(MemoryBuffer &doneInfoMb)
@@ -1965,7 +1991,7 @@ public:
         unsigned location;
         OwnedIFile iFile;
         StringBuffer filePath;
-        if (globals->getPropBool("@autoCopyBackup", true)?ensurePrimary(&activity, *partDesc, iFile, location, filePath):getBestFilePart(&activity, *partDesc, iFile, location, filePath, &activity))
+        if (globals->getPropBool("@autoCopyBackup", !isContainerized())?ensurePrimary(&activity, *partDesc, iFile, location, filePath):getBestFilePart(&activity, *partDesc, iFile, location, filePath, &activity))
             return iFile.getClear();
         else
         {

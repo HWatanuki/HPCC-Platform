@@ -24,6 +24,7 @@
 #include "jio.hpp"
 #include "jstream.hpp"
 #include "jbuff.hpp"
+#include <string>
 
 // A Java compatible String and StringBuffer class - useful for dynamic strings.
 #ifdef _DEBUG
@@ -385,6 +386,7 @@ interface IEntityHelper
 
 void jlib_decl appendURL(StringBuffer *dest, const char *src, size32_t len = -1, char lower=FALSE);
 extern jlib_decl StringBuffer &appendDecodedURL(StringBuffer &out, const char *url);
+extern jlib_decl StringBuffer &appendDecodedURL(StringBuffer &s, size_t len, const char *url);
 extern jlib_decl StringBuffer & appendStringAsCPP(StringBuffer &out, unsigned len, const char * src, bool addBreak);
 extern jlib_decl StringBuffer & appendStringAsQuotedCPP(StringBuffer &out, unsigned len, const char * src, bool addBreak);
 extern jlib_decl StringBuffer & appendDataAsHex(StringBuffer &out, unsigned len, const void * data);
@@ -575,6 +577,8 @@ inline StringBuffer& operator << (StringBuffer& s, const TValue& value)
 {
     return s.append(value);
 }
+
+extern jlib_decl void toLower(std::string & value);
 
 extern jlib_decl bool checkUnicodeLiteral(char const * str, unsigned length, unsigned & ep, StringBuffer & msg);
 extern jlib_decl void decodeCppEscapeSequence(StringBuffer & out, const char * in, bool errorIfInvalid);

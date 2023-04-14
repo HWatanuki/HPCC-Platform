@@ -15,7 +15,9 @@
     limitations under the License.
 ############################################################################## */
 
+#ifdef _WIN32
 #pragma warning(disable:4786)
+#endif
 
 #include "platform.h"
 
@@ -23,10 +25,11 @@
 #include "hidlcomp.h"
 #include "AccessMapGenerator.hpp"
 
-#include <algorithm>
 #include <list>
 #include <map>
 #include <set>
+#include <string>
+#include <vector>
 
 //-------------------------------------------------------------------------------------------------------------
 inline bool strieq(const char* s,const char* t) { return stricmp(s,t)==0; }
@@ -44,7 +47,6 @@ extern HIDLcompiler * hcp;
 bool isSCM = true;
 bool isESP = false;
 bool isESPng = false;
-StrBuffer clarion;
 char srcFileExt[4];
 
 int gOutfile;
@@ -87,7 +89,7 @@ static const char* getTypeKindName(type_kind kind)
     }
 };
 
-const char *type_name[] = 
+const char *type_name[] =
 {
     "??",
     "char",
@@ -111,31 +113,7 @@ const char *type_name[] =
     "??" // ESPENUM
 };
 
-const char *clarion_type_name[] = 
-{
-    "??",
-    "BYTE",
-    "BYTE",
-    "BYTE",
-    "CBOOL",
-    "SHORT",
-    "USHORT",
-    "LONG",
-    "ULONG",
-    "LONG",
-    "ULONG",
-    "LONGLONG",
-    "ULONGLONG",
-    "REAL",
-    "SREAL",
-    "",
-    "",
-    "BYTE",
-    "??",
-    "??"
-};
-
-const int type_size[] = 
+const int type_size[] =
 {
     0,  // tk_null
     1,  // TK_CHAR
@@ -158,105 +136,6 @@ const int type_size[] =
     1,  // ESP_STRUCT
     1   // ESP_ENUM
 };
-
-static const char *xlattable[] = 
-{
-    "abs","_abs",
-    "add","_add",
-    "address","_address",
-    "age","_age",
-    "any","_any",
-    "append","_append",
-    "at","_at",
-    "band","_band",
-    "bfloat4","_bfloat4",
-    "bfloat8","_bfloat8",
-    "binary","_binary",
-    "bind","_bind",
-    "blob","_blob",
-    "bor","_bor",
-    "bshift","_bshift",
-    "bxor","_bxor",
-    "byte","_byte",
-    "chr","_chr",
-    "clear","_clear",
-    "column","_column",
-    "create","_create",
-    "decimal","_decimal",
-    "deformat","_deformat",
-    "device","_device",
-    "dim","_dim",
-    "dispose","_dispose",
-    "dock","_dock",
-    "docked","_docked",
-    "dup","_dup",
-    "encrypt","_encrypt",
-    "entry","_entry",
-    "equate","_equate",
-    "errorcode","_errorcode",
-    "format","_format",
-    "get","_get",
-    "hlp","_hlp",
-    "icon","_icon",
-    "imm","_imm",
-    "in","_in",
-    "index","_index",
-    "inlist","_inlist",
-    "inrange","_inrange",
-    "ins","_ins",
-    "int","_int",
-    "key","_key",
-    "length","_length",
-    "like","_like",
-    "logout","_logout",
-    "long","_long",
-    "maximum","_maximum",
-    "memo","_memo",
-    "nocase","_nocase",
-    "omitted","_omitted",
-    "opt","_opt",
-    "out","_out",
-    "over","_over",
-    "ovr","_ovr",
-    "owner","_owner",
-    "page","_page",
-    "pageno","_pageno",
-    "pdecimal","_pdecimal",
-    "peek","_peek",
-    "poke","_poke",
-    "pre","_pre",
-    "press","_press",
-    "print","_print",
-    "project","_project",
-    "put","_put",
-    "range","_range",
-    "real","_real",
-    "reclaim","_reclaim",
-    "req","_req",
-    "round","_round",
-    "scroll","_scroll",
-    "short","_short",
-    "size","_size",
-    "sort","_sort",
-    "step","_step",
-    "string","_string",
-    "text","_text",
-    "upr","_upr",
-    "use","_use",
-    "val","_val",
-    "width","_width",
-    NULL,NULL
-};
-
-
-static const char *xlat(const char *from)
-{
-    for (unsigned i=0;xlattable[i];i+=2) {
-        if (stricmp(from,xlattable[i])==0)
-            return xlattable[i+1];
-    }
-    return from;
-}
 
 
 bool toClaInterface(char * dest, const char * src)
@@ -282,7 +161,7 @@ void indent(int indents)
         out("\t",1);
 }
 
-void out(const char *s,size_t l)
+void out(const char *s,ssize_t l)
 {
     ssize_t written = write(gOutfile,s,(unsigned)l);
     if (written < 0)
@@ -311,7 +190,7 @@ void voutf(const char* fmt,va_list args)
     // Better to use StringBuffer.valist_appendf, but unfortunately, project dependencies
     // disallow us to use StringBuffer (defined in jlib).
     if (_vsnprintf(buf, BUF_LEN, fmt, args)<0)
-        fprintf(stderr,"Warning: outf() gets too many long buffer (>%d)", BUF_LEN);     
+        fprintf(stderr,"Warning: outf() gets too many long buffer (>%d)", BUF_LEN);
     va_end(args);
 
     outs(buf);
@@ -321,20 +200,20 @@ void outf(const char *fmt, ...)
 {
     va_list args;
     va_start(args, fmt);
-    voutf(fmt,args);    
+    voutf(fmt,args);
 }
 
 void outf(int indents, const char *fmt, ...)
 {
     indent(indents);
-    
+
     va_list args;
     va_start(args, fmt);
-    voutf(fmt,args);    
+    voutf(fmt,args);
 }
 
 // ------------------------------------
-// "auto" indenting 
+// "auto" indenting
 
 int gIndent = 0;
 
@@ -363,7 +242,7 @@ void indentOutf(const char* fmt,...) __attribute__((format(printf,1,2)));
 void indentOutf(const char* fmt, ...)
 {
     indent(gIndent);
-    
+
     va_list args;
     va_start(args, fmt);
     voutf(fmt,args);
@@ -374,7 +253,7 @@ void indentOutf(int inc, const char* fmt, ...)
 {
     gIndent += inc;
     indent(gIndent);
-    
+
     va_list args;
     va_start(args, fmt);
     voutf(fmt,args);
@@ -384,10 +263,50 @@ void indentOutf1(int inc, const char* fmt,...) __attribute__((format(printf,2,3)
 void indentOutf1(int inc, const char* fmt, ...)
 {
     indent(gIndent+inc);
-    
+
     va_list args;
     va_start(args, fmt);
     voutf(fmt,args);
+}
+
+void validateProfileExecutionOptions(std::string &options)
+{
+    //
+    // Expected format:
+    //   options     ::= ("s" | "ms" | "us" | "ns") "," <bucketLimit> ["," <bucketLimit>]*
+    //   bucketLimit ::= digit+
+    // Note, caller must remove any spaces
+
+    //
+    // Split the option string up
+    std::vector<std::string> optionValues;
+    size_t start;
+    size_t end = 0;
+    while ((start = options.find_first_not_of(',', end)) != std::string::npos) {
+        end = options.find(',', start);
+        optionValues.push_back(options.substr(start, end - start));
+    }
+
+    //
+    // Must be at least 2, units and a bucket
+    if (optionValues.size() < 2)
+        throw "Execution profiling option must define at least one bucket";
+
+    //
+    // First entry is units
+    if (optionValues[0] != "s" && optionValues[0] != "ms" && optionValues[0]  != "us" && optionValues[0] != "ns")
+        throw "Execution profiling units must be s, ms, us, or ns";
+
+    //
+    // Remaining entries must be non-zero numbers increasing in value
+    int maxValue = 0;
+    for (unsigned i=1; i<optionValues.size(); ++i)
+    {
+        int value = std::stoi(optionValues[i]);
+        if (value <= maxValue )
+            throw "Execution profiling bucket limits must be non-zero and greater than the previous";
+        maxValue = value;
+    }
 }
 
 //-------------------------------------------------------------------------------------------------------------
@@ -414,7 +333,7 @@ ParamInfo::ParamInfo()
     templ = NULL;
     typname = NULL;
     size = NULL;
-    flags = 0;      
+    flags = 0;
     next = NULL;
     kind = TK_null;
     sizebytes = NULL;
@@ -440,13 +359,13 @@ ParamInfo::~ParamInfo()
         free(xsdtype);
     if (m_arrayImplType)
         delete m_arrayImplType;
-    
+
     delete tags;
     delete layouts;
     delete next;
 }
 
-char * ParamInfo::bytesize(int deref) 
+char * ParamInfo::bytesize(int deref)
 {
     if (!size)
         return NULL;
@@ -455,7 +374,7 @@ char * ParamInfo::bytesize(int deref)
     char str[1024];
     if (type_size[kind]==1)
     {
-        if (deref) 
+        if (deref)
         {
             strcpy(str,"*");
             strcat(str,size);
@@ -508,7 +427,7 @@ void ParamInfo::cat_type(char *s,int deref,int var)
     else {
         if (kind!=TK_null)
             strcat(s,type_name[kind]);
-        else 
+        else
             strcat(s,"string"); // TODO: why this happens?
     }
     if (!deref) {
@@ -519,23 +438,8 @@ void ParamInfo::cat_type(char *s,int deref,int var)
     }
 }
 
-clarion_special_type_enum ParamInfo::clarion_special_type()
-{   
-    if ((type_size[kind]==1)&&((flags&(PF_PTR|PF_REF))==PF_PTR)) {
-        if ((flags&PF_CONST)==0)
-            return cte_cstr;
-        return cte_constcstr;
-    }
-    else if ((flags&(PF_PTR|PF_REF))==(PF_PTR|PF_REF)) { // no support - convert to long
-        return cte_longref;
-    }
-    return cte_normal;
-}
-
-void ParamInfo::out_parameter(const char * pfx, int forclarion)
+void ParamInfo::out_parameter(const char * pfx)
 {
-    if (forclarion && (clarion_special_type()==cte_cstr))
-        outs("int, ");
     out_type();
     outf(" %s%s",pfx,name);
 }
@@ -601,10 +505,10 @@ void ParamInfo::write_body_struct_elem(int ref)
 {
     outs("\t");
     out_type(ref,1);
-    if (ref&&(flags&(PF_REF|PF_PTR))) 
+    if (ref&&(flags&(PF_REF|PF_PTR)))
     {
         outs(" *");
-        if ((flags&(PF_REF|PF_PTR))==(PF_REF|PF_PTR)) 
+        if ((flags&(PF_REF|PF_PTR))==(PF_REF|PF_PTR))
         {
             outs(" *");
         }
@@ -612,69 +516,11 @@ void ParamInfo::write_body_struct_elem(int ref)
     outf(" %s;\n",name);
 }
 
-void ParamInfo::out_clarion_parameter()
-{
-    out_clarion_type(false);
-    if(!typname || strcmp(typname, "__int64") != 0) outs(" ");
-    if (clarion_special_type()==cte_longref)
-        outs("REF_");
-    if (name)
-        outs(name);
-    else
-        outs("???");
-    
-}
-
-void ParamInfo::out_clarion_type(bool ret)
-{
-    clarion_special_type_enum cte = clarion_special_type();
-    bool isInt64 = (typname && strcmp(typname, "__int64") == 0);
-    
-    
-    if (!isInt64 && ((flags&PF_REF)||((flags&PF_PTR)&&(cte==cte_normal)))) {
-        outs("*");
-    }
-    if (cte==cte_longref) {
-        outs("LONG");
-    }
-    else if (cte==cte_cstr) {
-        outs("*CSTRING");
-    }
-    else if (cte==cte_constcstr) {
-        if (ret)
-            outs("*CSTRING");
-        else
-            outs("CONST *CSTRING");
-    }
-    else if (typname) {     
-        static char _typname[256];
-        if(isInt64) {
-            if(ret) {
-                strcpy(_typname, "__int64");        // __int64 return type unsupported defaulting to ulong for now.
-            }   
-            else if((flags & PF_REF) || (flags & PF_PTR)) {
-                strcpy(_typname, "LONG ");
-            }
-            else {
-                strcpy(_typname, "LONG hi");
-                strcat(_typname, name);
-                strcat(_typname, ", LONG lo");
-            }
-        }
-        else if(!toClaInterface(_typname, typname)){
-            xlat(_typname);     
-        }
-        outs(_typname);
-    }
-    else {
-        outs(clarion_type_name[kind]);
-    }
-}
 
 void ParamInfo::write_param_convert(int deref)
 {
     outs("(");
-    out_type(1,1);              
+    out_type(1,1);
     if (flags&(PF_REF|PF_PTR)) {
         if (!deref)
             outs(" *");
@@ -701,14 +547,14 @@ static esp_xlate_info esp_xlate_table[]=
 {
     //meta type                 xsd type                implementation      array impl      access type             type_kind           flags               method
     //------------------        ---------------         --------------      --------------  --------------          -----------         ------------        ----------
-    
+
 //  {"string",                  "string",               "StringBuffer",     "StringArray",  "const char *",         TK_CHAR,            (PF_PTR|PF_CONST),  EAM_jsbuf},
     {"string",                  "string",               "StringBuffer",     "StringArray",  "const char *",         TK_CHAR,            (PF_PTR|PF_CONST),  EAM_jsbuf},
     {"StringBuffer",            "string",               "StringBuffer",     "StringArray",  "const char *",         TK_CHAR,            (PF_PTR|PF_CONST),  EAM_jsbuf},
 //  {"hexBinary",               "base64Binary",         "MemoryBuffer",     "???",          "unsigned char *",      TK_UNSIGNEDCHAR,    (PF_PTR),           EAM_jmbuf},
     {"binary",                  "base64Binary",         "MemoryBuffer",     "???",          "const MemoryBuffer &", TK_STRUCT,          (PF_REF),           EAM_jmbin},
-    {"bool",                    "boolean",              "bool",             "BoolArray",    "bool",                 TK_BOOL,            0,                  EAM_basic}, 
-    {"boolean",                 "boolean",              "bool",             "BoolArray",    "bool",                 TK_BOOL,            0,                  EAM_basic}, 
+    {"bool",                    "boolean",              "bool",             "BoolArray",    "bool",                 TK_BOOL,            0,                  EAM_basic},
+    {"boolean",                 "boolean",              "bool",             "BoolArray",    "bool",                 TK_BOOL,            0,                  EAM_basic},
     {"decimal",                 "decimal",              "float",            "???",          "float",                TK_FLOAT,           0,                  EAM_basic},
     {"float",                   "float",                "float",            "FloatArray",   "float",                TK_FLOAT,           0,                  EAM_basic},
     {"double",                  "double",               "double",           "DoubleArray",  "double",               TK_DOUBLE,          0,                  EAM_basic},
@@ -730,7 +576,7 @@ static esp_xlate_info esp_xlate_table[]=
     {"normalizedString",        "normalizedString",     "StringBuffer",     "StringArray",  "const char *",         TK_CHAR,            (PF_PTR|PF_CONST),  EAM_jsbuf},
     {"xsdString",               "string",               "StringBuffer",     "StringArray",  "const char *",         TK_CHAR,            (PF_PTR|PF_CONST),  EAM_jsbuf},
     {"xsdBinary",               "binary",               "MemoryBuffer",     "???",          "const MemoryBuffer &", TK_STRUCT,          (PF_REF),           EAM_jmbin},
-    {"xsdBoolean",              "boolean",              "bool",             "???",          "bool",                 TK_BOOL,            0,                  EAM_basic}, 
+    {"xsdBoolean",              "boolean",              "bool",             "???",          "bool",                 TK_BOOL,            0,                  EAM_basic},
     {"xsdDecimal",              "decimal",              "float",            "???",          "float",                TK_FLOAT,           0,                  EAM_basic},
     {"xsdInteger",              "integer",              "int",              "???",          "int",                  TK_INT,             0,                  EAM_basic},
     {"xsdByte",                 "byte",                 "unsigned char",    "???",          "unsigned char",        TK_UNSIGNEDCHAR,    0,                  EAM_basic},
@@ -778,7 +624,7 @@ esp_xlate_info *esp_xlat(const char *from, bool defaultToString)
 {
     if (from)
     {
-        for (unsigned i=0; esp_xlate_table[i].meta_type!=NULL; i++) 
+        for (unsigned i=0; esp_xlate_table[i].meta_type!=NULL; i++)
         {
             if (stricmp(from,esp_xlate_table[i].meta_type)==0)
                 return &esp_xlate_table[i];
@@ -794,12 +640,12 @@ static char* getToBeDefinedType(const char* type)
 {
     const char* colon = strchr(type, ':');
     const char* bareType = colon ? colon+1 : type;
-    
+
     if (strnicmp(type, "xsd",colon-type)==0)
         return NULL;
 
     /*
-    for (unsigned i=0; esp_xlate_table[i].meta_type!=NULL; i++) 
+    for (unsigned i=0; esp_xlate_table[i].meta_type!=NULL; i++)
     {
         if (stricmp(bareType,esp_xlate_table[i].xsd_type)==0)
             return NULL;
@@ -831,15 +677,15 @@ static const char *MetaTypeToXsdType(const char *val)
 bool hasMetaVerInfo(MetaTagInfo *list, const char* tag)
 {
     double ver = getMetaDouble(list,tag,-1);
-    if (ver>0) 
+    if (ver>0)
         return true;
 
     const char* vs = getMetaString(list,tag, NULL);
-    if (vs!=NULL) 
+    if (vs!=NULL)
         return true;
 
     const char* id = getMetaConstId(list,tag,NULL);
-    if (id) 
+    if (id)
         return true;
 
     return false;
@@ -875,9 +721,9 @@ static esp_xlate_info *esp_xlat(ParamInfo *pi)
 {
     char metatype[256];
     *metatype=0;
-    
+
     pi->cat_type(metatype);
-    
+
     return esp_xlat(metatype);
 }
 
@@ -885,11 +731,11 @@ void ParamInfo::setXsdType(const char *value)
 {
     if (xsdtype)
         free(xsdtype);
-    
+
     const char *newValue=value;
     if (strncmp(value, "xsd", 3)==0)
         newValue=MetaTypeToXsdType(value);
-    
+
     xsdtype = (newValue!=NULL) ? strdup(newValue) : NULL;
 }
 
@@ -901,10 +747,10 @@ const char *ParamInfo::getXsdType()
         char metatype[256];
         *metatype=0;
         cat_type(metatype);
-        
+
         setXsdType(MetaTypeToXsdType(metatype));
     }
-    
+
     return xsdtype;
 }
 
@@ -916,8 +762,8 @@ const char* ParamInfo::getArrayImplType()
     if (isPrimitiveArray())
     {
         char metatype[256];
-        metatype[0] = 0;        
-        cat_type(metatype);     
+        metatype[0] = 0;
+        cat_type(metatype);
         esp_xlate_info *xlation=esp_xlat(metatype, false);
         m_arrayImplType = new StrBuffer(xlation->array_type);
     }
@@ -928,7 +774,7 @@ const char* ParamInfo::getArrayImplType()
         else
             m_arrayImplType = new VStrBuffer("IArrayOf<IConst%s>", typname);
     }
-    
+
     return m_arrayImplType->str();
 }
 
@@ -953,11 +799,11 @@ const char* ParamInfo::getArrayItemXsdType()
 
     case TK_null: return "string";
 
-    case TK_STRUCT: 
-    case TK_VOID: 
-    case TK_ESPSTRUCT: 
-    case TK_ESPENUM: 
-    default: throw "Unimplemented"; 
+    case TK_STRUCT:
+    case TK_VOID:
+    case TK_ESPSTRUCT:
+    case TK_ESPENUM:
+    default: throw "Unimplemented";
     }
 }
 
@@ -977,11 +823,11 @@ void ParamInfo::write_esp_declaration()
 {
     char metatype[256];
     *metatype=0;
-    
+
     cat_type(metatype);
-    
+
     esp_xlate_info *xlation=esp_xlat(metatype, false);
-    
+
     if (hasNameTag())
         outf("\tSoapStringParam m_%s_name;\n", name);
 
@@ -1038,12 +884,12 @@ void ParamInfo::write_esp_declaration()
 void ParamInfo::write_esp_init(bool &isFirst, bool msgRemoveNil)
 {
     outs(isFirst ? "\n\t: " : ",");
-    
+
     MetaTagInfo* deftag = findMetaTag(tags, "default");
-    
+
     bool removeNil = (msgRemoveNil || findMetaTag(tags, "nil_remove")!=NULL);
     const char *nilStr = (removeNil) ? "nilRemove" : "nilIgnore";
-    
+
     if (kind==TK_ESPSTRUCT)
     {
         outf("m_%s(serviceName, %s)", name, nilStr);
@@ -1086,7 +932,7 @@ void ParamInfo::write_esp_init(bool &isFirst, bool msgRemoveNil)
         else
             outf("m_%s(%s, false)", name, nilStr);
     }
-    
+
     isFirst=false;
 }
 
@@ -1096,20 +942,20 @@ void ParamInfo::write_esp_attr_method(const char *msgname, bool isSet, bool parN
 {
     char metatype[256];
     *metatype=0;
-    
+
     cat_type(metatype);
-    
+
     esp_xlate_info *xlation=esp_xlat(metatype);
-    
+
     char *methName=strdup(name);
     *methName=upperchar(*methName);
-    
+
     const char *httpcont = getMetaString("http_content", NULL);
-    
+
     bool hasNilRemove = (parNilRemove || getMetaInt("nil_remove"));
     bool hasTrim = (parTrim || getMetaInt("trim"));
-    
-    
+
+
     if (hasNameTag())
     {
         if (isSet)
@@ -1123,12 +969,12 @@ void ParamInfo::write_esp_attr_method(const char *msgname, bool isSet, bool parN
                 outf("C%s::", msgname);
             outf("set%s_name", methName);
             outs("(const char *  val)");
-            
+
             if (isDecl)
                 outs((isPure) ? "=0;\n" : ";\n");
             else
                 outf("{ m_%s_name.set(val); }\n", name);
-            
+
         }
         else
         {
@@ -1140,7 +986,7 @@ void ParamInfo::write_esp_attr_method(const char *msgname, bool isSet, bool parN
             if (!isDecl && msgname)
                 outf("C%s::", msgname);
             outf("get%s_name()", methName);
-            
+
             if (isDecl)
                 outs((isPure) ? "=0;\n" : ";\n");
             else
@@ -1154,7 +1000,7 @@ void ParamInfo::write_esp_attr_method(const char *msgname, bool isSet, bool parN
             if (!isDecl && msgname)
                 outf("C%s::", msgname);
             outf("get%s_value()", methName);
-            
+
             if (isDecl)
                 outs((isPure) ? "=0;\n" : ";\n");
             else
@@ -1175,12 +1021,12 @@ void ParamInfo::write_esp_attr_method(const char *msgname, bool isSet, bool parN
                 outf("C%s::", msgname);
             outf("set%s_mimetype", methName);
             outs("(const char *  val)");
-            
+
             if (isDecl)
                 outs((isPure) ? "=0;\n" : ";\n");
             else
                 outf("{ m_%s_mimetype.set(val); }\n", name);
-            
+
         }
         else
         {
@@ -1192,15 +1038,15 @@ void ParamInfo::write_esp_attr_method(const char *msgname, bool isSet, bool parN
             if (!isDecl && msgname)
                 outf("C%s::", msgname);
             outf("get%s_mimetype()", methName);
-            
+
             if (isDecl)
                 outs((isPure) ? "=0;\n" : ";\n");
             else
                 outf("{ return m_%s_mimetype.str(); }\n", name);
         }
     }
-    
-    
+
+
     if (isSet)
     {
         if (hasNilRemove && xlation->eam_type == EAM_basic && (flags & PF_TEMPLATE)==0 )
@@ -1213,18 +1059,18 @@ void ParamInfo::write_esp_attr_method(const char *msgname, bool isSet, bool parN
             if (!isDecl && msgname)
                 outf("C%s::", msgname);
             outf("set%s_null()", methName);
-            
+
             if (isDecl)
                 outs((isPure) ? "=0;\n" : ";\n");
             else
                 outf("{ m_%s.Nil(); }", name);
         }
-        
+
         if (isDecl)
             outs("\t");
         if (isDecl && isPure)
             outs("virtual ");
-        
+
         if (flags & PF_TEMPLATE)
         {
             // setXXX(IArrayOf<IEspXXX>);
@@ -1281,7 +1127,7 @@ void ParamInfo::write_esp_attr_method(const char *msgname, bool isSet, bool parN
             if (!isDecl && msgname)
                 outf("C%s::", msgname);
             outf("set%s", methName);
-            
+
             if (templ && !strcmp(templ, "ESParray"))
             {
                 //if (isEspStringArray())
@@ -1305,7 +1151,7 @@ void ParamInfo::write_esp_attr_method(const char *msgname, bool isSet, bool parN
                     break;
                 }
             }
-            
+
             if (isDecl)
             {
                 if (isPure)
@@ -1318,8 +1164,8 @@ void ParamInfo::write_esp_attr_method(const char *msgname, bool isSet, bool parN
                 {
                     outf("{ ");
                     if (isEspStringArray())
-                        outf("m_%s->kill(); ",name); 
-                    outf(" CloneArray(m_%s.getValue(), val); }\n", name); 
+                        outf("m_%s->kill(); ",name);
+                    outf(" CloneArray(m_%s.getValue(), val); }\n", name);
                 }
                 else if (kind == TK_ESPENUM)
                 {
@@ -1355,12 +1201,12 @@ void ParamInfo::write_esp_attr_method(const char *msgname, bool isSet, bool parN
             if (!isDecl && msgname)
                 outf("C%s::", msgname);
             outf("update%s()", methName);
-            
+
             if (isDecl)
             {
                 if (isPure)
                     outs("=0;\n");
-                else 
+                else
                     outs(";\n");
             }
             else
@@ -1395,7 +1241,7 @@ void ParamInfo::write_esp_attr_method(const char *msgname, bool isSet, bool parN
             outf("set%s(C%s val)",methName, typname);
             if (isDecl)
             {
-                if (isPure) 
+                if (isPure)
                     outs("=0");
                 outs(";\n");
             }
@@ -1444,7 +1290,7 @@ void ParamInfo::write_esp_attr_method(const char *msgname, bool isSet, bool parN
                     outf("(%s val)", xlation->access_type);
                     break;
                 }
-            
+
                 if (isDecl)
                 {
                     if (isPure)
@@ -1458,7 +1304,7 @@ void ParamInfo::write_esp_attr_method(const char *msgname, bool isSet, bool parN
                     {
                     case EAM_jsbuf:
                         // TODO: can not handle ArrayOfXXX yet
-                        /** 
+                        /**
                         if (xsdType && strncmp(xsdType,"ArrayOf",7)!=0)
                         {
                             //do a deserialization to enforce the versioning
@@ -1469,7 +1315,7 @@ void ParamInfo::write_esp_attr_method(const char *msgname, bool isSet, bool parN
 
                             outf("\t\tCRpcMessage msg;\n");
                             outf("\t\tmsg.unmarshall(&xpp);\n");
-                            
+
                             outf("\t\tStringBuffer s;\n");
                             outf("\t\tC%s tmp(\"%s\");\n", xsdType, "XX"); // msgname?: not right
 
@@ -1511,18 +1357,18 @@ void ParamInfo::write_esp_attr_method(const char *msgname, bool isSet, bool parN
             if (!isDecl && msgname)
                 outf("C%s::", msgname);
             outf("get%s_isNull()", methName);
-            
+
             if (isDecl)
                 outs((isPure) ? "=0;\n" : ";\n");
             else
                 outf("{return m_%s.is_nil();}\n", name);
         }
-        
+
         if (isDecl)
             outs("\t");
         if (isDecl && isPure)
             outs("virtual ");
-        
+
         if (flags & PF_TEMPLATE)
         {
             outf("%s & ",getArrayImplType());
@@ -1565,7 +1411,7 @@ void ParamInfo::write_esp_attr_method(const char *msgname, bool isSet, bool parN
                 break;
             }
         }
-        
+
         if (isDecl)
         {
             if (isPure)
@@ -1583,7 +1429,7 @@ void ParamInfo::write_esp_attr_method(const char *msgname, bool isSet, bool parN
                 outf(" { return m_%s.getValue(); }\n", name);
             }
             else if (flags & PF_TEMPLATE)
-            {               
+            {
                 outf(" { return (%s &) m_%s; }\n", getArrayImplType(), name);
             }
             else
@@ -1622,7 +1468,7 @@ void ParamInfo::write_esp_attr_method(const char *msgname, bool isSet, bool parN
                 if (!isDecl && msgname)
                     outf("C%s::", msgname);
                 outf("get%sAsString()", methName);
-                
+
                 if (isDecl)
                 {
                     if (isPure)
@@ -1639,7 +1485,7 @@ void ParamInfo::write_esp_attr_method(const char *msgname, bool isSet, bool parN
             break;
         }
     }
-    
+
     free(methName);
 }
 
@@ -1648,7 +1494,7 @@ void ParamInfo::write_esp_client_impl()
 {
     char *methName=strdup(name);
     *methName=upperchar(*methName);
-    
+
     outf("\treq->set%s(%s_);\n", methName, name);
     free(methName);
 }
@@ -1658,11 +1504,11 @@ void ParamInfo::write_esp_param()
 {
     char metatype[256];
     *metatype=0;
-    
+
     cat_type(metatype);
-    
+
     esp_xlate_info *xlation=esp_xlat(metatype);
-    
+
     if (kind==TK_ESPSTRUCT)
     {
         outf("IConst%s &%s_", typname, name);
@@ -1699,7 +1545,7 @@ void ParamInfo::write_esp_param()
                     break;
                 }
             }
-                
+
         }
         else
         {
@@ -1719,141 +1565,15 @@ void ParamInfo::write_esp_param()
     }
 }
 
-void ParamInfo::write_clarion_attr_method(bool isSet)
-{
-    ParamInfo *savenext = next;
-    char metatype[256]={0};
-    esp_xlate_info *xlation = NULL;
-    if (isESP && kind==TK_null)
-    {
-        xlation=esp_xlat(xsdtype);
-        
-        if (xlation)
-        {
-            kind = xlation->access_kind;
-            flags |= xlation->access_flags;
-            cat_type(metatype);
-        }
-    }
-    else
-    {
-        cat_type(metatype);
-        xlation=esp_xlat(metatype);
-    }
-    
-    char methName[256]={0};
-    
-    const char *httpcont = getMetaString("http_content", NULL);
-    
-    if (httpcont!=NULL)
-    {
-        ParamInfo strparm;
-        strparm.name = strdup("mimetype");
-        strparm.typname = strdup("const char *");
-        if (isSet)
-        {
-            ProcInfo setProc;
-            
-            sprintf(methName, "set%s_mimetype", name);
-            methName[3]=upperchar(methName[3]);
-            
-            setProc.name = strdup(methName);
-            setProc.params = &strparm;
-            setProc.out_clarion_method();
-            setProc.params = 0;
-            
-        }
-        else
-        {
-            ProcInfo setProc;
-            
-            sprintf(methName, "get%s_mimetype", name);
-            methName[3]=upperchar(methName[3]);
-            
-            setProc.name = strdup(methName);
-            setProc.rettype = &strparm;
-            setProc.out_clarion_method();
-            setProc.rettype = 0;
-        }
-    }
-    
-    ParamInfo lenparm;
-    lenparm.typname = strdup("unsigned int");
-    lenparm.name = strdup("len");
-    
-    if (isSet)
-    {
-        ProcInfo setProc;
-        sprintf(methName, "set%s", name);
-        methName[3]=upperchar(methName[3]);
-        
-        setProc.name = strdup(methName);
-        
-        next = 0;
-        setProc.params = this;
-        
-        switch (xlation->eam_type)
-        {
-        case EAM_jmbuf:
-            {
-                next = &lenparm;
-                setProc.out_clarion_method();
-                next=0;
-                break;
-            }
-        case EAM_jmbin:
-        case EAM_basic:
-        case EAM_jsbuf:
-        default:
-            setProc.out_clarion_method();
-            break;
-        }
-        
-        setProc.params = 0;
-    }
-    else
-    {
-        ProcInfo getProc;
-        sprintf(methName, "get%s", name);
-        methName[3]=upperchar(methName[3]);
-        
-        getProc.name = strdup(methName);
-        
-        switch (xlation->eam_type)
-        {
-        case EAM_jmbuf:
-            {
-                next = 0;
-                getProc.params = this;
-                outf("void get%s(%s val, unsigned int len)", methName, xlation->access_type);
-                next = &lenparm;
-                getProc.out_clarion_method();
-                break;
-            }
-        case EAM_jmbin:
-        case EAM_basic:
-        case EAM_jsbuf:
-        default:
-            getProc.rettype = this;
-            getProc.out_clarion_method();
-            break;
-        }
-        getProc.params=0;
-        getProc.rettype=0;
-    }
-    
-    next=savenext;
-}
-
 bool ParamInfo::write_mapinfo_check(int indents, const char* ctxvar)
 {
     StrBuffer minVer, maxVer, deprVer;
     bool hasMin = getMetaVerInfo("min_ver", minVer);
     bool hasMax = getMetaVerInfo("max_ver", maxVer);
     bool hasDepr = getMetaVerInfo("depr_ver", deprVer);
-    
+
     bool hasOutput = false;
-    
+
     if (hasMin || hasDepr || hasMax)
     {
         hasOutput = true;
@@ -1861,14 +1581,14 @@ bool ParamInfo::write_mapinfo_check(int indents, const char* ctxvar)
         outs("if ((clientVer==-1.0");
         if (hasMin)
         {
-            if (hasDepr) 
+            if (hasDepr)
                 outf(" || (clientVer>=%s && clientVer<%s))", minVer.str(), deprVer.str());
             else if (hasMax)
                 outf(" || (clientVer>=%s && clientVer<=%s))", minVer.str(), maxVer.str());
-            else 
+            else
                 outf(" || clientVer>=%s)", minVer.str());
         }
-        else if (hasDepr) 
+        else if (hasDepr)
             outf(" || clientVer<%s)", deprVer.str());
         else // maxVer>0
             outf(" || clientVer<=%s)", maxVer.str());
@@ -1902,7 +1622,7 @@ void ParamInfo::write_esp_marshall(bool isRpc, bool encodeXml, bool checkVer, in
     const char *soap_path=getMetaString("soap_path", NULL);
     char *path = (soap_path!=NULL) ? strdup(soap_path) : NULL;
     char *tagname = NULL;
-    
+
     if (path)
     {
         path[strlen(path)-1]=0;
@@ -1919,7 +1639,7 @@ void ParamInfo::write_esp_marshall(bool isRpc, bool encodeXml, bool checkVer, in
             path= (char *) ""; // cast to kill a warning. Could recode to avoid more cleanly but this is obsolete code anyway
         }
     }
-    
+
     if (checkVer)
     {
         if (write_mapinfo_check(indents,"ctx"))
@@ -1980,7 +1700,7 @@ const char* ParamInfo::getOptionalParam()
 {
     static StrBuffer optGroup;
     StrBuffer optional;
-    
+
     optGroup.clear();
 
     if (getMetaStringValue(optional,"optional"))
@@ -1993,7 +1713,7 @@ void ParamInfo::write_esp_unmarshall(const char *rpcvar, bool useBasePath, int i
 {
     const char *soap_path=getMetaString("soap_path", NULL);
     char *path = (soap_path!=NULL) ? strdup(soap_path) : NULL;
-    
+
     if (path && *path)
     {
         path[strlen(path)-1]=0;
@@ -2003,11 +1723,11 @@ void ParamInfo::write_esp_unmarshall(const char *rpcvar, bool useBasePath, int i
         if (tagname)
         {
             *tagname=0;
-            tagname++;          
+            tagname++;
             outf("hasValue |= m_%s.unmarshall(%s, \"%s\", \"%s\"%s);\n", name, rpcvar, tagname, path, getOptionalParam());
         }
         else
-        {           
+        {
             outf("hasValue |= m_%s.unmarshall(%s, \"%s\"%s);\n", name, rpcvar, path, getOptionalParam());
         }
     }
@@ -2073,40 +1793,12 @@ ProcInfo::~ProcInfo()
     delete next;
 }
 
-void ProcInfo::out_clarion_parameter_list()
-{
-    outs("(");
-    ParamInfo * p=params;
-    while (p) {
-        p->out_clarion_parameter();
-        p = p->next;
-        if (p)
-            outs(", ");
-    }
-    outs(")");
-}
-
-void ProcInfo::out_clarion_method()
-{
-    outf("%-15s  PROCEDURE",xlat(name));
-    out_clarion_parameter_list();
-    if (rettype)
-    {
-        outs(",");
-        rettype->out_clarion_type(true);
-    }
-    if (isSCM)
-        outs(",PROC\n");
-    else
-        outs(",PASCAL\n");
-}
-
 
 void ProcInfo::out_method(const char *classpfx, int omitvirt)
 {
     if (virt&&!omitvirt)
     {
-        if (callback) 
+        if (callback)
             outf("HRPCvirtualcallback ");
         else
             outf("virtual ");
@@ -2141,13 +1833,13 @@ void ProcInfo::out_method(const char *classpfx, int omitvirt)
     }
 }
 
-void ProcInfo::out_parameter_list(const char *pfx,int forclarion)
+void ProcInfo::out_parameter_list(const char *pfx)
 {
     outs("(");
     ParamInfo * p = params;
-    while (p) 
+    while (p)
     {
-        p->out_parameter(pfx, forclarion);
+        p->out_parameter(pfx);
         p = p->next;
         if (p)
             outs(", ");
@@ -2155,7 +1847,7 @@ void ProcInfo::out_parameter_list(const char *pfx,int forclarion)
     outs(")");
 }
 
-void ProcInfo::write_body_method_structs2(const char * modname) 
+void ProcInfo::write_body_method_structs2(const char * modname)
 {
     // buffer structure
     outf("struct HRPC_d_%s__%s\n{\n",modname,name);
@@ -2204,7 +1896,7 @@ void ProcInfo::write_body_method_structs2(const char * modname)
             align = 0;
         }
     }
-    
+
     int swapp=write_body_swapparam();
     write_body_pushparam(swapp);
     write_body_popparam(swapp);
@@ -2212,10 +1904,10 @@ void ProcInfo::write_body_method_structs2(const char * modname)
         write_body_pushreturn();
         write_body_popreturn();
     }
-    
+
     // now constructors
     outf("\tHRPC_d_%s__%s() {}\n",modname,name);
-    
+
     if (params) {
         outf("\tHRPC_d_%s__%s",modname,name);
         out_parameter_list("_");
@@ -2271,7 +1963,7 @@ void ProcInfo::write_body_popparam(int swapp)
         outf("\t\t%s = ",p->name);
         p->write_param_convert();
         outf("_b.writeptr(sizeof(*%s));\n",p->name);
-        
+
     }
     ForEachParam(this,p,PF_OUT|PF_STRING,0) {
         outf("\t\t%s = ",p->name);
@@ -2336,7 +2028,7 @@ void ProcInfo::write_body_popreturn()
                 p->write_param_convert(1);
                 outf("malloc(%s);\n",p->bytesize(1));
                 outf("\t\t_b.read(*%s,%s);\n",p->name,p->bytesize(1));
-                
+
             }
             else {
                 outf("\t\t_b.read(%s,%s);\n",p->name,p->bytesize());
@@ -2396,7 +2088,7 @@ void ProcInfo::write_body_pushparam(int swapp)
             outf("\t\t//_b.writerev(%s,sizeof(*%s));\n",p->name,p->name);
             outf("\t\t_b.write(%s,sizeof(*%s));\n",p->name,p->name);
         }
-        else 
+        else
             outf("\t\t_b.write(%s,sizeof(*%s));\n",p->name,p->name);
     }
     ForEachParam(this,p,PF_IN|PF_STRING,PF_SIMPLE|PF_VARSIZE) {
@@ -2433,7 +2125,7 @@ void ProcInfo::write_body_pushreturn()
                 // should handle size_t* as well as ref
                 outf("\t\t_b.write(*%s,%s);\n",p->name,p->bytesize(1));
                 outf("\t\tfree(*%s);\n",p->name);
-                
+
             }
             else {
                 outf("\t\t_b.write(%s,%s);\n",p->name,p->bytesize());
@@ -2461,9 +2153,6 @@ void ProcInfo::write_head_size()
 // used for simple types only at the head of the packet
 {
     if (lastin) {
-        char sz[2048];
-        sz[0] = 0;
-        size_t sza=0;
         ParamInfo *p=params;
         ParamInfo *lp=NULL;
         while (1) {
@@ -2519,36 +2208,9 @@ void ApiInfo::write_header_method()
         outf(" %s", pi->name);
         pi->out_parameter_list("");
         outs(";\n");
-    }   
+    }
 }
 
-void ApiInfo::write_clarion_include_method()
-{
-    ProcInfo *pi = proc;
-    if (!pi->callback)
-    {
-        outf("      %s ",xlat(pi->name));
-        pi->out_clarion_parameter_list();
-        
-        if (pi->rettype) 
-        {
-            outs(",");
-            pi->rettype->out_clarion_type(true);
-        }
-        
-        ParamInfo *pa;
-        unsigned sizeOfParms=0;
-        ForEachParam(pi, pa, 0, 0)
-        {
-            if (pa->flags&(PF_PTR|PF_REF))
-                sizeOfParms+=4;
-            else
-                sizeOfParms+=type_size[pa->kind];
-        }
-        
-        outf(", pascal, raw, name('_%s@%d')\n", pi->name,sizeOfParms);
-    }   
-}
 
 //-------------------------------------------------------------------------------------------------------------
 // class ModuleInfo
@@ -2576,10 +2238,10 @@ ModuleInfo::~ModuleInfo()
 void ModuleInfo::write_body_class()
 {
     outf("// class %s \n\n",name);
-    
+
     outf("static struct HRPCmoduleid _id_%s = { { ",name);
     char *mn = name;
-    for (int i=0;i<8;i++) 
+    for (int i=0;i<8;i++)
     {
         if (i)
             outs(", ");
@@ -2591,13 +2253,13 @@ void ModuleInfo::write_body_class()
             outs("0");
     }
     outf("}, %d };\n\n",version);
-    
+
     int fn=0;
-    for (ProcInfo *pi=procs; pi; pi=pi->next) 
+    for (ProcInfo *pi=procs; pi; pi=pi->next)
     {
         fn++;
         pi->write_body_method_structs2(name);
-    }       
+    }
     outs("\n");
     outf("%s::%s() { _id = &_id_%s; }\n\n",name,name,name);
     outf("#ifdef LOCAL_%s  // Stub(%s):\n\n",name,name);
@@ -2710,170 +2372,6 @@ void ModuleInfo::write_body_class_stub(int cb)
     outs("}\n\n");
 }
 
-void ModuleInfo::write_clarion_include_module()
-{
-    if (isSCM) {
-        char _name[256];
-        toClaInterface(_name, name);
-        if (base) {
-            char _base[256];
-            toClaInterface(_base, base);
-            outf("%s  INTERFACE(%s),COM\n", _name, _base);
-        }
-        else 
-            outf("%s  INTERFACE,COM\n", _name);
-    }
-    else
-        outf("HRPCI_%s  INTERFACE(HRPCI_Clarion_Module)\n",name);
-    
-    ProcInfo *pi;
-    for (pi=procs; pi; pi=pi->next) {
-        if (pi->callback)
-            continue;
-        
-        outf("%-15s  PROCEDURE",xlat(pi->name));
-        pi->out_clarion_parameter_list();
-        if (pi->rettype) {
-            outs(",");
-            pi->rettype->out_clarion_type(true);
-        }
-        if (isSCM)
-            outs(",PROC\n");
-        else
-            outs(",PASCAL\n");
-    }   
-    outs("END\n\n");
-}
-
-void ModuleInfo::write_clarion_scm_stub_class()
-{
-    outf("// clarion interface stub for %s \n",name);
-    outf("class SCMCLWSTUB_%s: public SCMStubBase, implements %s // interface\n",name,name);
-    outf("\t%s &_o;\n",name);
-    outf("public:\n");
-    outf("\tIMPLEMENT_SCMSTUBBASE\n");
-    outf("\tSCMCLW_%s(%s *_if) : SCMStubBase(_if), _o(*LINK(_if)) { } \n",name,name);
-    outf("\t~SCMCLW_%s() { _o.Release(); } \n",name);
-    ProcInfo *pi;
-    for (pi=procs; pi; pi=pi->next) {
-        if (pi->callback)
-            continue;
-        outs("\t");
-        if (pi->rettype==NULL) 
-        {
-            outs("void");
-        }
-        else
-            pi->rettype->out_type();
-        outf(" _stdcall %s",pi->name);
-        pi->out_parameter_list("",1);
-        outs("\n");
-        outs("\t{\n");
-        outs("\t\tSCMCLW_INTRO;\n");
-        outf("#ifdef SCMCLW_INTRO_%s_%s;\n",name,pi->name);
-        outf("\t\tSCMCLW_INTRO_%s_%s;\n",name,pi->name);
-        outs("#endif\n");
-        if (pi->rettype) {
-            outs("\t");
-            pi->rettype->write_body_struct_elem(0);
-            outs("\t\t_return = ");
-        }
-        else
-            outs("\t\t");
-        outf("_o.%s(",pi->name);
-        ParamInfo *p;
-        ForEachParam(pi,p,0,0) {
-            outf("%s",p->name);
-            if (p->next)
-                outs(", ");
-        }
-        outs(");\n");
-        outf("#ifdef SCMCLW_OUTRO_%s_%s;\n",name,pi->name);
-        outf("\t\tSCMCLW_OUTRO_%s_%s;\n",name,pi->name);
-        outs("#endif\n");
-        outs("\t\tSCMCLW_OUTRO;\n");
-        if (pi->rettype) {
-            outs("\t\treturn _return;");
-        }
-        outs("\t}\n");
-    }
-    outs("};\n");
-}
-
-void ModuleInfo::write_clarion_interface_class()
-{
-    outs("extern \"C\" {\n\n");
-    outs("\n");
-    outf("// clarion interface class CIC_%s \n",name);
-    outf("struct HRPCI_%s: public HRPCI_Clarion_Module // interface\n",name);
-    ProcInfo *pi;
-    outs("{\n");
-    for (pi=procs; pi; pi=pi->next) {
-        if (pi->callback)
-            continue;
-        outs("\tvirtual ");
-        if (pi->rettype==NULL) 
-        {
-            outs("void");
-        }
-        else
-            pi->rettype->out_type();
-        outf(" _stdcall %s",pi->name);
-        pi->out_parameter_list("",1);
-        outs("=0;\n");
-    }
-    outs("};\n");
-    outf("#ifndef LOCAL_%s\n\n",name);
-    outf("class CIC_%s : public HRPCI_%s\n",name,name);
-    outs("{\n");
-    outs("public:\n");
-    outf("\t%s _o;\n",name);
-    outs("\tunsigned xxcount;\n");
-    for (pi=procs; pi; pi=pi->next) {
-        if (pi->callback)
-            continue;
-        outs("\t");
-        if (pi->rettype==NULL) 
-        {
-            outs("void");
-        }
-        else
-            pi->rettype->out_type();
-        outf(" _stdcall %s",pi->name);
-        pi->out_parameter_list("",1);
-        outs("\n");
-        outs("\t{\n");
-        outs("\t\t");
-        if (pi->rettype) {
-            outs("return ");
-        }
-        outf("_o.%s(",pi->name);
-        ParamInfo *p;
-        ForEachParam(pi,p,0,0) {
-            outf("%s",p->name);
-            if (p->next)
-                outs(", ");
-        }
-        outs(");\n");
-        outs("\t}\n");
-    }
-    outf("\tCIC_%s() { xxcount = 0; }\n",name);
-    outf("\tvoid _stdcall Link() const { ++const_cast<CIC_%s*>(this)->xxcount; }\n", name);
-    outf("\tint _stdcall Release() const { \n\t\tCIC_%s* ths = const_cast<CIC_%s*>(this);\n\t\tif (ths->xxcount == 0) { delete ths; return 1; }\n\t\t--ths->xxcount;\n\t\treturn 0;\n\t}\n",name,name);
-    outs("\tvoid _stdcall FreeMem(void *p) { free(p); }\n");
-    outs("};\n");
-    outf("CIC_%s* PASCAL HRPC_Make_%s(HRPCI_Clarion_Transport *t)\n",name,name);
-    outs("{\n");
-    outf("\tCIC_%s *ret=new CIC_%s;\n",name,name);
-    outs("\tret->_o.UseTransport(t->GetTransport());\n");
-    outs("\treturn ret;\n");
-    outs("}\n");
-    
-    outs("#endif\n");
-    outs("}\n");
-}
-
-
 void ModuleInfo::write_define()
 {
     outf("#define LOCAL_%s       // implementation of %s\n",name,name);
@@ -2940,11 +2438,11 @@ void ModuleInfo::write_header_class()
             outs("#define HRPCvirtualcallback virtual\n");
             outs("#define HRPCpurecallback    =0\n");
         }
-        
+
         outf("class %s : public HRPCmodule\n",name);
         outs("#endif\n");
         outs("{\npublic:\n");
-        
+
         outf("\t%s();\n",name);
         for (pi=procs; pi; pi=pi->next) {
             outs("\t");
@@ -2973,12 +2471,12 @@ void ModuleInfo::write_header_class()
 void EspMessageInfo::write_esp_ipp()
 {
     ParamInfo *pi;
-    const char *parent = getParentName();
+    const char *myparent = getParentName();
 
     if (espm_type_ == espm_enum)
     {
         //const char* defaultValue = getParams()->getMetaString("enum",NULL); // first enum item
-        outf("class CX%s : public SoapEnumParamNew<C%s>\n",name_,name_); 
+        outf("class CX%s : public SoapEnumParamNew<C%s>\n",name_,name_);
         outf("{\n");
         outs("public:\n");
         outf("\tCX%s(nilBehavior nilB) : SoapEnumParamNew<C%s>(nilB)\n", name_, name_);
@@ -3043,7 +2541,7 @@ void EspMessageInfo::write_esp_ipp()
         outf("inline bool Array__Equal(C%s const & m, C%s const p)  { return m==p; }\n", name_, name_);
         outf("inline void Array__Destroy(C%s & /*next* /) { }\n", name_);
         //outf("MAKECopyArrayOf(simple, simple, array)
-        outf("MAKEArrayOf(C%s, C%s, %sArray)\n\n", name_,name_,name_);      
+        outf("MAKEArrayOf(C%s, C%s, %sArray)\n\n", name_,name_,name_);
         //outf("class %sArray : public ArrayOf<C%s, C%s> {};\n\n",name_,name_,name_);
         outs("\n");
 #endif
@@ -3053,8 +2551,7 @@ void EspMessageInfo::write_esp_ipp()
 
 
     ParamInfo *contentVar=NULL;
-    
-    bool removeNil=(getMetaInt("nil_remove", 0)!=0);
+
     for (pi=getParams();pi!=NULL;pi=pi->next)
     {
         if (pi->getMetaString("http_content", NULL)!=NULL)
@@ -3063,8 +2560,8 @@ void EspMessageInfo::write_esp_ipp()
             break;
         }
     }
-    
-    const char *baseclass = parent;
+
+    const char *baseclass = myparent;
     if (!baseclass)
     {
         switch(espm_type_)
@@ -3085,7 +2582,7 @@ void EspMessageInfo::write_esp_ipp()
     outf("   implements IEsp%s,\n", name_);
     outf("   implements IClient%s\n", name_);
     outs("{\n");
-    
+
     outs("protected:\n");
     for (pi=getParams();pi!=NULL;pi=pi->next)
     {
@@ -3094,25 +2591,25 @@ void EspMessageInfo::write_esp_ipp()
 
     if (getMetaInt("element")!=0)
         outs(1, "StringBuffer m_tag_value;\n");
-    
+
     if (contentVar!=NULL)
         outf("\tStringBuffer m_%s_mimetype;\n", contentVar->name);
-    
+
     outs("\n\tvoid *m_eventSink = nullptr;\n");
     outs("\n\tIInterface* m_RequestState = nullptr;\n");
     outs("\tStringBuffer m_serviceName;\n");
     outs("\tStringBuffer m_methodName;\n");
     outs("\tStringBuffer m_msgName;\n");
-    
+
     outs("\n\tlong soap_reqid = 0;\n");
     outs("\tMutex m_mutex;\n");
     outs("public:\n");
     outs("\tIMPLEMENT_IINTERFACE;\n");
-    
+
     //default constructor
     outf("\n\tC%s(const char *serviceName, const char *bcompat);\n", name_);
     outf("\n\tC%s(const char *serviceName, IRpcMessageBinding *init=NULL);", name_);
-    
+
     if (espm_type_==espm_struct)
     {
         //Raw message constructor
@@ -3125,7 +2622,7 @@ void EspMessageInfo::write_esp_ipp()
 
         //IProperties constructor
         outf("\n\tC%s(IEspContext* ctx, const char *serviceName, IProperties *params, MapStrToBuf *attachments);", name_);
-    }   
+    }
 
     if (espm_type_==espm_request)
         outs("\n\tIEspClientRpcSettings &rpc(){return *static_cast<IEspClientRpcSettings*>(this);}\n\n");
@@ -3138,28 +2635,28 @@ void EspMessageInfo::write_esp_ipp()
     outs("\t{\n");
     outs("\t\tm_msgName.set(msgname);\n");
     outs("\t}\n\n");
-    
+
     outs("\tstatic const char *queryXsdElementName()\n");
     outs("\t{\n");
     outf("\t\treturn \"%s\";\n", name_);
     outs("\t}\n\n");
-    
+
     //method ==> getXsdDefinition
     outs("\tstatic StringBuffer &getXsdDefinition(IEspContext &context, CHttpRequest* request, StringBuffer &schema, BoolHash&added, const char *xns=\"xsd\", const char *wsns=\"tns\", unsigned flags=1)\n");
     outs("\t{\n");
     outs("\t\treturn getXsdDefinition(context, request, queryXsdElementName(), schema, added, xns, wsns, flags);\n");
     outs("\t}\n");
-    
+
     //method ==> getXsdDefinition
     outs("\tstatic StringBuffer &getXsdDefinition(IEspContext &context, CHttpRequest* request, const char *msgTypeName, StringBuffer &schema, BoolHash&added, const char *xns=\"xsd\", const char *wsns=\"tns\", unsigned flags=1);\n");
-    
+
     //method ==> getMapInfo
     outs("\tstatic void getMapInfo(IMapInfo& info);\n");
     outs("\tstatic void getMapInfo(IMapInfo& info, BoolHash& added);\n");
 
     //method ==> getHtmlForm
     outs("\tstatic StringBuffer &getHtmlForm(IEspContext &context, CHttpRequest* request, const char *serv, const char *method, StringBuffer &form, bool includeFormTag=true, const char *prefix=NULL);\n");
-    
+
     //method ==> hasCustomHttpContent
     outs("\tstatic bool hasCustomHttpContent()\n");
     outs("\t{\n");
@@ -3168,19 +2665,19 @@ void EspMessageInfo::write_esp_ipp()
     else
         outs("\t\treturn false;\n");
     outs("\t}\n");
-    
+
     //method ==> serializeHtml
     outs("\tStringBuffer &serializeHtml(IEspContext &context, const char *serv, const char *method, StringBuffer &html);\n");
-    
+
     //method ==> serialize (IRpcMessage&)
     outs("\n\tvoid serialize(IRpcMessage& rpc_resp);\n");
-    
+
     //method ==> copy
     outf("\n\tvoid copy(C%s &from);\n", name_);
-    
+
     //method ==> copy from interface
     outf("\n\tvoid copy(IConst%s &ifrom);\n", name_);
-    
+
     //method ==> serializeContent (StringBuffer&)
     outs("\n\tvoid serializeContent(IEspContext* ctx, StringBuffer& buffer, IProperties **pprops=NULL);\n");
     outs("\n\tvoid serializeAttributes(IEspContext* ctx, StringBuffer& s);\n");
@@ -3188,11 +2685,11 @@ void EspMessageInfo::write_esp_ipp()
 
     //method ==> serialize (StringBuffer&)
     outf("\n\tstatic void serializer(IEspContext* ctx, IConst%s &ifrom, StringBuffer& buffer, bool keepRootTag=true);\n", name_);
-    
+
     //method ==> serialize (MemoryBuffer&, StringBuffer &)
     if (contentVar)
         outs("\n\tvoid appendContent(IEspContext* ctx, MemoryBuffer& buffer, StringBuffer &mimetype);\n");
-    
+
     outs("\tvoid setEventSink(void * val){m_eventSink=val;}\n");
     outs("\tvoid * getEventSink(){return m_eventSink;}\n");
 
@@ -3203,7 +2700,7 @@ void EspMessageInfo::write_esp_ipp()
     outs("\tconst char * getMethod(){return m_methodName.str();}\n\n");
     outs("\tvoid setReqId(unsigned val){soap_reqid=val;}\n");
     outs("\tunsigned getReqId(){return soap_reqid;}\n\n");
-    
+
     outs("\tvoid lock(){m_mutex.lock();}\n");
     outs("\tvoid unlock(){m_mutex.unlock();}\n\n");
 
@@ -3212,9 +2709,9 @@ void EspMessageInfo::write_esp_ipp()
         outs(1, "void set_tag_value(const char * value){m_tag_value.set(value);}\n");
         outs(1, "const char * get_tag_value(){return m_tag_value.str();}\n\n");
     }
-    
+
     outs("\n\tbool unserialize(IRpcMessage& rpc_request, const char *tagname, const char *basepath);\n");
-    if (parent)
+    if (myparent)
     {
         outs("\n\tbool localUnserialize(IRpcMessage& rpc_request, const char *tagname, const char *basepath);\n");
         outs("\n\tbool unserialize(IEspContext* ctx, CSoapValue& soapval, bool localOnly=false);\n");
@@ -3225,25 +2722,25 @@ void EspMessageInfo::write_esp_ipp()
         outs("\n\tbool unserialize(IEspContext* ctx, CSoapValue& soapval);\n");
         outs("\n\tbool unserialize(IEspContext* ctx, IProperties& params, MapStrToBuf *attachments, const char *basepath=NULL);\n");
     }
-    
+
     //outs("\n\tvoid unserialize(const char * msg);\n");
-    
+
     if (espm_type_==espm_response)
     {
         outs("\n\tvirtual void setRedirectUrl(const char *url)\n");
         outs("\t{ CSoapResponseBinding::setRedirectUrl(url); }\n");
 
-        
+
         outs("\n\tvirtual const IMultiException& getExceptions()\n");
         outs("\t{ return CSoapResponseBinding::getExceptions(); }\n");
-        
+
         outs("\n\tvirtual int queryClientStatus()\n");
         outs("\t{ return CSoapResponseBinding::getRpcState(); }\n");
-        
+
         outs("\n\tvirtual void noteException(IException& e)\n");
-        outs("\t{  CSoapResponseBinding::noteException(e); }\n"); 
+        outs("\t{  CSoapResponseBinding::noteException(e); }\n");
     }
-    
+
     outs("\n");
     write_esp_methods(espaxm_both, true, false);
     outs("};\n\n");
@@ -3296,11 +2793,11 @@ void EspMessageInfo::write_esp()
         return;
     }
 
-    const char *parent=getParentName();
+    const char *myparent=getParentName();
 
     ParamInfo *contentVar=NULL;
     ParamInfo *pi=NULL;
-    
+
     bool removeNil=(getMetaInt("nil_remove", 0)!=0);
     for (pi=getParams();pi!=NULL;pi=pi->next)
     {
@@ -3320,9 +2817,9 @@ void EspMessageInfo::write_esp()
     //default constructor
     outf("\nC%s::C%s(const char *serviceName, IRpcMessageBinding *init)", name_, name_);
     bool isFirstInited=true;
-    if (parent)
+    if (myparent)
     {
-        outf(" : C%s(serviceName, init)", parent);
+        outf(" : C%s(serviceName, init)", myparent);
         isFirstInited=false;
     }
 
@@ -3338,7 +2835,7 @@ void EspMessageInfo::write_esp()
     outs("\n{\n");
     outs("\tm_eventSink=NULL;\n");
     outs("\tm_RequestState=NULL;\n");
-    
+
     outs("\tm_serviceName.append(serviceName);\n");
     outf("\tm_msgName.append(\"%s\");\n", name_);
     outs("\tif (init)\n");
@@ -3350,14 +2847,14 @@ void EspMessageInfo::write_esp()
     outs("\t\tsetThunkHandle(init->getThunkHandle());\n");
     outs("\t\tsetMethod(init->getMethod());\n");
     outs("\t}\n");
-    
+
     outs("}\n");
-    
+
     outf("\nC%s::C%s(const char *serviceName, const char *bc)", name_, name_);
     isFirstInited=true;
-    if (parent)
+    if (myparent)
     {
-        outf(" : C%s(serviceName)", parent);
+        outf(" : C%s(serviceName)", myparent);
         isFirstInited=false;
     }
 
@@ -3373,20 +2870,20 @@ void EspMessageInfo::write_esp()
     outs("\n{\n");
     outs("\tm_eventSink=NULL;\n");
     outs("\tm_RequestState=NULL;\n");
-    
+
     outs("\tm_serviceName.append(serviceName);\n");
     outf("\tm_msgName.append(\"%s\");\n", name_);
     outs("}\n");
-    
+
     if (espm_type_==espm_struct)
     {
         //Raw message constructor
         /*
         outf("\nC%s::C%s(const char *serviceName, const char * msg)", name_, name_);
         isFirstInited=true;
-        if (parent)
+        if (myparent)
         {
-            outf(" : C%s(serviceName, msg)", parent);
+            outf(" : C%s(serviceName, msg)", myparent);
             isFirstInited=false;
         }
         for (pi=getParams();pi!=NULL;pi=pi->next)
@@ -3398,7 +2895,7 @@ void EspMessageInfo::write_esp()
             outs((isFirstInited) ? " : " : ", ");
             outf("m_%s_mimetype(%s)", contentVar->name, contentVar->getMetaString("http_content", "\"text/xml; charset=UTF-8\""));
         }
-        
+
         outs("\n\t{\n\t\tm_eventSink=NULL;\n");
         outs("\t\tm_RequestState=NULL;\n");
         outs("\t\tm_serviceName.append(serviceName);\n");
@@ -3411,9 +2908,9 @@ void EspMessageInfo::write_esp()
         //rpc message constructor
         outf("\nC%s::C%s(const char *serviceName, IRpcMessage* rpcmsg)", name_, name_);
         isFirstInited=true;
-        if (parent)
+        if (myparent)
         {
-            outf(" : C%s(serviceName, rpcmsg)", parent);
+            outf(" : C%s(serviceName, rpcmsg)", myparent);
             isFirstInited=false;
         }
         for (pi=getParams();pi!=NULL;pi=pi->next)
@@ -3430,18 +2927,18 @@ void EspMessageInfo::write_esp()
         outs("\tm_RequestState=NULL;\n");
         outs("\tm_serviceName.append(serviceName);\n");
         outf("\tm_msgName.append(\"%s\");\n", name_);
-        if (parent)
+        if (myparent)
             outs("\tlocalUnserialize(*rpcmsg,NULL,NULL);\n");
         else
             outs("\tunserialize(*rpcmsg,NULL,NULL);\n");
         outs("}\n");
-        
+
         //IProperties constructor
         outf("\nC%s::C%s(IEspContext* ctx, const char *serviceName, IProperties *params, MapStrToBuf *attachments)", name_, name_);
         isFirstInited=true;
-        if (parent)
+        if (myparent)
         {
-            outf(" : C%s(ctx, serviceName, params, attachments)", parent);
+            outf(" : C%s(ctx, serviceName, params, attachments)", myparent);
             isFirstInited=false;
         }
         for (pi=getParams();pi!=NULL;pi=pi->next)
@@ -3453,21 +2950,21 @@ void EspMessageInfo::write_esp()
             outs((isFirstInited) ? " : " : ", ");
             outf("m_%s_mimetype(%s)", contentVar->name, contentVar->getMetaString("http_content", "\"text/xml; charset=UTF-8\""));
         }
-        
+
         outs("\n{\n\tm_eventSink=NULL;\n");
         outs("\tm_RequestState=NULL;\n");
         outs("\tm_serviceName.append(serviceName);\n");
         outf("\tm_msgName.append(\"%s\");\n", name_);
-        if (parent)
+        if (myparent)
             outs("\tunserialize(ctx,*params,attachments, NULL,true);\n}\n");
         else
             outs("\tunserialize(ctx,*params,attachments, NULL);\n}\n");
-    }   
-    
+    }
+
     //=======================================================================================
     //method ==> getXsdDefinition
     // @context: the context could affect the schema, e.g., the version, the URL parameters
-    // @flags: 0x001 - define the struct/enum as complexType. 
+    // @flags: 0x001 - define the struct/enum as complexType.
     //         0x010 - do not include group-type enclosure (i.e., just define the fields, e.g., as part of other complex type definition)
     //         0x100 - do not include fields at all (only to include definitions of fields, recursively)
     bool isExtSimpleType = getMetaInt("element", 0)!=0;
@@ -3476,7 +2973,7 @@ void EspMessageInfo::write_esp()
 
     indentReset(1);
     indentOuts("if (!(flags & 0x100))\n\t{\n");
-    
+
     indentOuts(1,"IProperties *props = request->queryParameters();\n");
     indentOuts("if(msgTypeName) {\n");
     indentOuts(1,"if(added.getValue(msgTypeName))\n");
@@ -3484,7 +2981,7 @@ void EspMessageInfo::write_esp()
     indentOuts("else\n");
     indentOuts1(1,"added.setValue(msgTypeName, 1);\n");
     indentOuts(-1,"}\n");
-        
+
     indentOuts("if (flags & 0x01) {\n");
     bool isEmptyComplexType = true; //a complex type with no children, no attribute and no parent
     if (isExtSimpleType || getParentName() || hasNonAttributeChild() || (espm_type_==espm_response && getMetaInt("exceptions_inline", 0)))
@@ -3508,18 +3005,18 @@ void EspMessageInfo::write_esp()
     else if (espm_type_==espm_struct)
         indentOuts(1,"schema.appendf(\"<xsd:complexType name=\\\"%s\\\">\\n\", msgTypeName);\n");
     else
-        indentOuts(1,"schema.appendf(\"<xsd:element name=\\\"%s\\\"><xsd:complexType>\\n\", msgTypeName);\n");  
+        indentOuts(1,"schema.appendf(\"<xsd:element name=\\\"%s\\\"><xsd:complexType>\\n\", msgTypeName);\n");
 
     if (isExtSimpleType)
         indentOuts("schema.append(\"<xsd:simpleContent><xsd:extension base=\\\"xsd:string\\\">\\n\");\n");
     indentOuts(-1, "}\n");
-    
+
     // native arrays
     typedef std::map<std::string,std::string> EspNativeArrays;
-    EspNativeArrays nativeArrays; 
+    EspNativeArrays nativeArrays;
     // esp struct arrays
     typedef std::set<std::string> EspStructArrays;
-    EspStructArrays structArrays; 
+    EspStructArrays structArrays;
 
     //no element children for extended simple type
     if (!isEmptyComplexType && !isExtSimpleType)
@@ -3537,7 +3034,7 @@ void EspMessageInfo::write_esp()
                 indentOuts("schema.append(\"<xsd:element name=\\\"Exceptions\\\" type=\\\"tns:ArrayOfEspException\\\" minOccurs=\\\"0\\\" maxOccurs=\\\"1\\\"/>\");\n");
             indentOuts("}\n");
         }
-        
+
         if (parent)
             indentOutf("C%s::getXsdDefinition(context, request, NULL, schema, added, xns, wsns, 0x10);\n", parent);
 
@@ -3547,7 +3044,7 @@ void EspMessageInfo::write_esp()
             {
                 enum {definedtype, inline_primitive_array, inline_array, complextype} complexity=definedtype;
                 StrBuffer buffer;
-                
+
                 const char *xsd_type = pi->getMetaXsdType();
                 if (xsd_type)
                 {
@@ -3565,17 +3062,17 @@ void EspMessageInfo::write_esp()
                                 const char* type = pi->getArrayImplType();
                                 nativeArrays[pi->getArrayItemXsdType()] = VStrBuffer("Esp%s", type).str();
                                 buffer.appendf("tns:Esp%s", type);
-                            }                       
+                            }
                         }
                         else
                         {
                             buffer.append("tns:");
-                            
+
                             if (pi->getMetaString("item_tag",  NULL))
                                 complexity=inline_array;
                             else {
                                 structArrays.insert(pi->typname);
-                                buffer.append("ArrayOf");                           
+                                buffer.append("ArrayOf");
                             }
                             buffer.append(pi->typname);
                         }
@@ -3591,11 +3088,11 @@ void EspMessageInfo::write_esp()
                 {
                     buffer.append(pi->getXsdType());
                 }
-                
-                
+
+
                 const char *xsdtype = buffer.str();
                 const char *xsdns = "";
-                
+
                 if (xsdtype)
                 {
                     int count= buffer.length();
@@ -3606,11 +3103,11 @@ void EspMessageInfo::write_esp()
                     if (strchr(xsdtype, ':')==NULL)
                         xsdns="xsd:";
                 }
-                
+
                 bool hasMapInfo = pi->hasMapInfo();
                 if (hasMapInfo)
                 {
-                    indentOutf("if (!context.suppressed(\"%s\",\"%s\")) {\n", this->name_, pi->name); 
+                    indentOutf("if (!context.suppressed(\"%s\",\"%s\")) {\n", this->name_, pi->name);
                     indentInc(1);
                 }
 
@@ -3621,7 +3118,7 @@ void EspMessageInfo::write_esp()
                     indentOutf("if (context.authorizeFeature(%s, acc) && acc>=SecAccess_Read) {\n", access);
                     indentInc(1);
                 }
-        
+
                 StrBuffer xmlTag;
                 const char* tagName = pi->getMetaStringValue(xmlTag,"xml_tag") ? xmlTag.str() : pi->name;
 
@@ -3641,7 +3138,7 @@ void EspMessageInfo::write_esp()
                         indentOutf("schema.append(\"<xsd:element minOccurs=\\\"0\\\" name=\\\"%s\\\">\");\n", tagName);
                         indentOuts("schema.append(\"<xsd:complexType><xsd:sequence>\");\n");
                         indentOutf("schema.append(\"<xsd:element name=\\\"%s\\\" type=\\\"xsd:%s\\\" minOccurs=\\\"0\\\" maxOccurs=\\\"unbounded\\\"", pi->getMetaString("item_tag",  "Item"), pi->getArrayItemXsdType());
-                        
+
                         int cols = pi->getMetaInt("cols",0);
                         int rows = pi->getMetaInt("rows",0);
                         if (cols>0 || rows>0)
@@ -3666,7 +3163,7 @@ void EspMessageInfo::write_esp()
                     }
                 case definedtype:
                     {
-                        indentOutf("schema.append(\"<xsd:element");                 
+                        indentOutf("schema.append(\"<xsd:element");
 
                         // min occurs
                         int minOccurs = (pi->getMetaInt("required", 0)) ? 1 : 0;
@@ -3677,7 +3174,7 @@ void EspMessageInfo::write_esp()
                         if (pi->hasMetaTag("default"))
                         {
                             if (pi->kind==TK_CHAR || pi->kind==TK_UNSIGNEDCHAR || strcmp(xsdtype,"string")==0)
-                            { 
+                            {
                                 const char* val = pi->getMetaString("default",NULL);
                                 if (val && *val)
                                 {
@@ -3692,7 +3189,7 @@ void EspMessageInfo::write_esp()
                                     else
                                         outf(" default=\\\"%s\\\"", val);
                                 }
-                            }                       
+                            }
                             else if (pi->kind==TK_DOUBLE || pi->kind==TK_FLOAT || strcmp(xsdtype,"double")==0)
                             {
                                 double val = pi->getMetaDouble("default");
@@ -3721,11 +3218,11 @@ void EspMessageInfo::write_esp()
                                     else
                                         outf(" default=\\\"%s\\\"", val);
                                 }
-                                else 
+                                else
                                 {
-                                    int val = pi->getMetaInt("default", -1);
-                                    if (val != -1)
-                                        outf(" default=\\\"%d\\\"", val);
+                                    int value = pi->getMetaInt("default", -1);
+                                    if (value != -1)
+                                        outf(" default=\\\"%d\\\"", value);
                                 }
                             }
                             else// assume it is integer
@@ -3735,7 +3232,7 @@ void EspMessageInfo::write_esp()
                                     outf(" default=\\\"%d\\\"", val);
                             }
                         }
-                        
+
                         // name & type
                         outf(" name=\\\"%s\\\" type=\\\"%s%s\\\"", tagName, xsdns, xsdtype);
 
@@ -3743,7 +3240,7 @@ void EspMessageInfo::write_esp()
                         StrBuffer annot;
 
                         const char* formType = pi->getMetaInt("password") ? "password" : NULL;
-                        if (formType) 
+                        if (formType)
                             annot.appendf(" formType=\\\"%s\\\"",formType);
 
                         bool collapsed = pi->getMetaInt("collapsed")?true:false;;
@@ -3792,7 +3289,7 @@ void EspMessageInfo::write_esp()
                     break;
                 }
 
-                if (access) 
+                if (access)
                     indentOuts(-1,"}\n");
 
                 //if (optional)
@@ -3806,7 +3303,7 @@ void EspMessageInfo::write_esp()
             indentOuts("if (!(flags & 0x10))\n");
                 indentOutf1(1,"schema.append(\"</xsd:%s>\\n\");\n", xsdGroupType);
         }
-    
+
     } //!isEmptyComplexType && !isExtSimpleType
 
     if (!isEmptyComplexType)
@@ -3841,7 +3338,7 @@ void EspMessageInfo::write_esp()
     const int MIT_IsStruct = 0x04;
     enum MapInfoType {  MIT_EnumFalse=MIT_IsEnum, MIT_EnumTrue=MIT_HasMap|MIT_IsEnum,
         MIT_StructFalse=MIT_IsStruct,MIT_StructTrue=MIT_IsStruct|MIT_HasMap };
-    typedef std::map<std::string, int> TypeMap; 
+    typedef std::map<std::string, int> TypeMap;
     TypeMap typesNeeded;
 
     bool parenthesisOpened = false;
@@ -3884,7 +3381,7 @@ void EspMessageInfo::write_esp()
             else
                 outs("\t\t*** pi->typname is empty!!\n");
         }
-        
+
         else if (pi->flags & PF_TEMPLATE)
         {
             if (strcmp(pi->templ, "ESParray")==0)
@@ -3896,7 +3393,7 @@ void EspMessageInfo::write_esp()
                 outf("\t\t// *** skip field: name=%s, type=%s\n", pi->name, pi->typname);
         }
 
-        if (thisType.length() && strcmp(thisType.c_str(),name_)!=0)         
+        if (thisType.length() && strcmp(thisType.c_str(),name_)!=0)
         {
             TypeMap::const_iterator it = typesNeeded.find(thisType);
             if (it==typesNeeded.end() || (*it).second & MIT_HasMap) // thisType is not in typesNeeded or it is there with version info
@@ -3923,7 +3420,7 @@ void EspMessageInfo::write_esp()
         }
     }
 
-    if (parenthesisOpened)  
+    if (parenthesisOpened)
         outs("\t}\n");
 
     // native arrays
@@ -3993,11 +3490,11 @@ void EspMessageInfo::write_esp()
             hasVer = pi->getMetaVerInfo("depr_ver",ver.clear());
             if (hasVer)
                 outf("\tinfo.addDeprVersion(\"%s\",\"%s\",%s);\n", name_, pi->name, ver.str());
-            
+
             hasVer = pi->getMetaVerInfo("max_ver",ver.clear());
             if (hasVer)
                 outf("\tinfo.addMaxVersion(\"%s\",\"%s\",%s);\n", name_, pi->name, ver.str());
-            
+
             const char* opt = pi->getMetaString("optional", NULL);
             if (opt)
             {
@@ -4026,7 +3523,7 @@ void EspMessageInfo::write_esp()
     //TODO: move includeFormTag into onGetForm() to reduce significant generated code
     indentReset();
     indentOutf("\nStringBuffer &C%s::getHtmlForm(IEspContext &context, CHttpRequest* request, const char *serv, const char *method, StringBuffer &form, bool includeFormTag, const char *prefix)\n", name_);
-    
+
     indentOuts("{\n");
     indentOuts(1,"IProperties *props = request->queryParameters();\n");
     bool hasAttachment=false;
@@ -4048,29 +3545,29 @@ void EspMessageInfo::write_esp()
 
     indentOuts("StringBuffer extfix;\n");
     indentOuts("form.append(\" <table>\\n\");\n");
-    
+
     for (pi=getParams();pi!=NULL;pi=pi->next)
     {
         bool hasMapInfo = pi->hasMapInfo();
         if (hasMapInfo)
         {
-            indentOutf("if (!context.suppressed(\"%s\",\"%s\")) {\n", this->name_, pi->name); 
+            indentOutf("if (!context.suppressed(\"%s\",\"%s\")) {\n", this->name_, pi->name);
             indentInc(1);
         }
 
         if (!pi->getMetaInt("hidden"))
         {
             int rows = pi->getMetaInt("rows", 5);
-            
+
             StrBuffer label;
             if (!pi->getMetaStringValue(label,"label"))
                 if (!pi->getMetaStringValue(label,"xml_tag"))
                     label = pi->name;
-            
+
             if (pi->getMetaInt("rows") || (pi->flags & PF_TEMPLATE))
             {
                 int cols = pi->getMetaInt("cols", 50);
-                
+
                 indentOuts("extfix.clear();\n");
                 indentOuts("if (prefix && *prefix)\n");
                 indentOuts1(1,"extfix.append(prefix).append(\".\");\n");
@@ -4082,7 +3579,7 @@ void EspMessageInfo::write_esp()
                     StrBuffer tmp;
                     const char* def = pi->getMetaStringValue(tmp,"default") ? tmp.str() : "";
 
-                    indentOutf("form.appendf(\"<table><tr><td><textarea name=\\\"%%s\\\" cols=\\\"%d\\\" rows=\\\"%d\\\">%s</textarea></td>\", extfix.str());\n", 
+                    indentOutf("form.appendf(\"<table><tr><td><textarea name=\\\"%%s\\\" cols=\\\"%d\\\" rows=\\\"%d\\\">%s</textarea></td>\", extfix.str());\n",
                         cols, rows, def);
 
                     indentOutf("form.append(\"</tr></table>\");\n");
@@ -4113,10 +3610,10 @@ void EspMessageInfo::write_esp()
                     indentOuts("if (prefix && *prefix)\n");
                     indentOuts1(1,"extfix.append(prefix).append(\".\");\n");
                     indentOutf("extfix.append(\"%s\");\n", pi->getXmlTag());
-                    
+
                     // handle default value
-                    indentOutf("\n\tform.appendf(\"  <tr><td><b>%s? </b></td><td><input type=\\\"checkbox\\\" name=\\\"%%s\\\" value=\\\"1\\\" %s /></td></tr>\\n\", extfix.str());\n", 
-                        label.str(), pi->getMetaInt("default",0)?"checked=\\\"1\\\"":"");                   
+                    indentOutf("\n\tform.appendf(\"  <tr><td><b>%s? </b></td><td><input type=\\\"checkbox\\\" name=\\\"%%s\\\" value=\\\"1\\\" %s /></td></tr>\\n\", extfix.str());\n",
+                        label.str(), pi->getMetaInt("default",0)?"checked=\\\"1\\\"":"");
                 }
                 else if (espinfo->access_kind==TK_INT || espinfo->access_kind==TK_UNSIGNED
                     || espinfo->access_kind==TK_SHORT || espinfo->access_kind==TK_UNSIGNEDSHORT)
@@ -4124,14 +3621,14 @@ void EspMessageInfo::write_esp()
                     indentOuts("extfix.clear();\n");
                     indentOuts("if (prefix && *prefix) extfix.append(prefix).append(\".\");\n");
                     indentOutf("\textfix.append(\"%s\");\n", pi->getXmlTag());
-                    
+
                     int cols = pi->getMetaInt("cols", 20);
                     indentOutf("form.appendf(\"  <tr><td><b>%s: </b></td><td><input type=\\\"text\\\" name=\\\"%%s\\\" size=\\\"%d\\\"", label.str(), cols);
-                    
+
                     int defValue = pi->getMetaInt("default");
                     if (defValue!=0)
                         indentOutf(" value=\\\"%d\\\"", defValue);
-                    
+
                     outs("/>\", extfix.str());\n");
                     indentOuts("form.append(\"</td></tr>\\n\");\n");
                 }
@@ -4150,23 +3647,23 @@ void EspMessageInfo::write_esp()
                     indentOuts("if (prefix && *prefix)\n");
                     indentOuts1(1,"extfix.append(prefix).append(\".\");\n");
                     indentOutf("extfix.append(\"%s\");\n", pi->getXmlTag());
-                    
+
                     // handle default value
                     StrBuffer tmp;
                     const char* def = pi->getMetaStringValue(tmp,"default") ? tmp.str() : "";
-                                                                    
+
                     int cols = pi->getMetaInt("cols", isDate ? 20 : 50);
                                         indentOutf("form.appendf(\"  <tr><td><b>%s: </b></td><td><input type=\\\"%s\\\" name=\\\"%%s\\\" size=\\\"%d\\\" value=\\\"%s\\\" />\", extfix.str());\n", label.str(), inputType, cols, def);
                     if (isDate)
                         indentOutf("form.append(\"<a href=\\\"javascript:show_calendar('%s');\\\"><img src=\\\"files_/img/cal.gif\\\" width=\\\"16\\\" height=\\\"16\\\" border=\\\"0\\\" alt=\\\"Pick Date\\\"/><br/>\");\n", pi->name);
-                    indentOuts("form.append(\"</td></tr>\\n\");\n");                    
+                    indentOuts("form.append(\"</td></tr>\\n\");\n");
                 }
             }
         }
         if (hasMapInfo)
             indentOuts(-1,"}\n");
     }
-    
+
     indentReset(1);
     indentOuts("if (includeFormTag) {\n");
     indentOuts(1,"form.append(\"<tr><td></td><td><input type=\\\"submit\\\" value=\\\"Submit\\\" name=\\\"S1\\\" />\");\n");
@@ -4185,7 +3682,7 @@ void EspMessageInfo::write_esp()
     if (getMetaInt("serialize_html"))
     {
         outs("\thtml.append(\"<p align=\\\"left\\\">\");\n");
-        
+
         if (contentVar)
         {
             if (!(contentVar->flags & PF_TEMPLATE))
@@ -4219,13 +3716,13 @@ void EspMessageInfo::write_esp()
                 }
             }
         }
-        
+
         outs("\thtml.append(\"</p>\");\n");
     }
     outs("\treturn html;\n");
     outs("}\n");
-    
-    
+
+
     //method ==> serialize (IRpcMessage&)
     outf("\nvoid C%s::serialize(IRpcMessage& rpc_resp)\n{\n", name_);
     if (parent)
@@ -4240,7 +3737,7 @@ void EspMessageInfo::write_esp()
 
     outf("\trpc_resp.set_ns(%s);\n", getMetaString("ns_var", "\"\""));
     outs("\trpc_resp.set_name(m_msgName.str());\n");
-    
+
     const char *nsuri = getMetaString("ns_uri", NULL);
     if (nsuri)
         outf("\trpc_resp.set_nsuri(%s);\n\n", nsuri);
@@ -4250,19 +3747,19 @@ void EspMessageInfo::write_esp()
         outs("\tnsuri.append(\"urn:hpccsystems:ws:\").appendLower(m_serviceName.length(), m_serviceName.str());\n");
         outs("\trpc_resp.set_nsuri(nsuri.str());\n\n");
     }
-    
+
     int soap_encode = getMetaInt("soap_encode", -1);
     if (soap_encode ==-1)
         soap_encode = getMetaInt("encode", 1);
     if (soap_encode==0)
         outs("\trpc_resp.setEncodeXml(false);\n");
-    
+
     if (espm_type_==espm_response)
     {
         outs(
             "\tconst IMultiException& exceptions = getExceptions();\n"
             "\tif (exceptions.ordinality() > 0)\n"
-            "\t{\n"         
+            "\t{\n"
             "\t\tStringBuffer xml;\n"
             "\t\texceptions.serialize(xml, 0, true, false);\n"
             "\t\trpc_resp.add_value(\"\", \"\", \"Exceptions\", \"\", xml.str(), false);\n"
@@ -4279,12 +3776,12 @@ void EspMessageInfo::write_esp()
             attrCount++;
             if (attrCount==1)
                 outs(1, "Owned<IProperties> props=createProperties();\n");
-            
+
             outf(1, "if (!m_%s.is_nil())\n", pi->name);
             outf(2, "props->setProp(\"%s\", m_%s.getValue());\n", pi->getXmlTag(), pi->name);
         }
     }
-    
+
     if (attrCount!=0)
         outs(1, "rpc_resp.add_attr(NULL, NULL, NULL, *props.get());\n");
 
@@ -4292,12 +3789,12 @@ void EspMessageInfo::write_esp()
     {
         pi->write_esp_marshall(true, true, true, (espm_type_==espm_response)?2:1);
     }
-    
+
     if (espm_type_==espm_response)
         outs("\t}\n");
-    
+
     outs("}\n\n");
-    
+
     //method ==> copy
     outf("\nvoid C%s::copy(C%s &from)\n{\n", name_, name_);
     if (parent)
@@ -4310,7 +3807,7 @@ void EspMessageInfo::write_esp()
     if (getMetaInt("element"))
         outf("\tset_tag_value(from.get_tag_value());\n");
     outs("}\n\n");
-    
+
     //method ==> copy from interface
     outf("\nvoid C%s::copy(IConst%s &ifrom)\n{\n", name_, name_);
     if (parent)
@@ -4330,7 +3827,7 @@ void EspMessageInfo::write_esp()
     if (getMetaInt("element"))
         outf("\tset_tag_value(ifrom.get_tag_value());\n");
     outs("}\n\n");
-    
+
     //method ==> getAttributes (IProperties &attributes)
     outf("\nvoid C%s::getAttributes(IProperties &attributes)\n{\n", name_);
     for (pi=getParams(); pi!=NULL; pi=pi->next)
@@ -4389,19 +3886,19 @@ void EspMessageInfo::write_esp()
         if (hasMapInfo())
             outf("\tdouble clientVer = ctx ? ctx->getClientVersion() : -1;\n");
         //attributes first
-        int attrCount=0;
+        int attribCount=0;
         for (pi=getParams();pi!=NULL;pi=pi->next)
         {
             if (pi->getMetaInt("attribute"))
             {
-                attrCount++;
-                if (attrCount==1)
+                attribCount++;
+                if (attribCount==1)
                 {
                     outs(1, "if (pprops)\n");
                     outs(1, "{\n");
                     outs(2, "*pprops=NULL;\n");
                 }
-                
+
                 outf(2, "if (!m_%s.is_nil())\n", pi->name);
                 outs(2, "{\n");
                 outs(3, "if (!*pprops)\n");
@@ -4410,7 +3907,7 @@ void EspMessageInfo::write_esp()
                 outs(2, "}\n");
             }
         }
-        if (attrCount!=0)
+        if (attribCount!=0)
             outs(1, "}\n");
 
         for (pi=getParams();pi!=NULL;pi=pi->next)
@@ -4419,7 +3916,7 @@ void EspMessageInfo::write_esp()
                 pi->write_esp_marshall(false, encodeXML, true);
         }
 
-        if (getMetaInt("element")!=0) 
+        if (getMetaInt("element")!=0)
         {
             outs(1, "if (m_tag_value.length()) {\n");
             outs(2, "StringBuffer encoded;\n");
@@ -4428,7 +3925,7 @@ void EspMessageInfo::write_esp()
             outs(1, "}\n");
         }
     }
-        
+
     outs("}\n\n");
 
     //method ==> serialize (StringBuffer&)
@@ -4455,7 +3952,7 @@ void EspMessageInfo::write_esp()
     for (pi=getParams();pi!=NULL;pi=pi->next)
         if (pi->getMetaInt("attribute"))
             nAttrs++;
-    
+
     if (nAttrs)
     {
         outf(1,"if (keepRootTag)\n\t{\n");
@@ -4505,13 +4002,6 @@ void EspMessageInfo::write_esp()
 
         char *uname=getFieldName(pi->name);
 
-        bool hasIf = false;
-        if (pi->hasMapInfo())
-            hasIf = pi->write_mapinfo_check(1,"ctx");
-
-        //if (hasIf) outs("\t{\n");
-        const char* ifIndent = hasIf?"\t":"";
-
         if (pi->flags & PF_TEMPLATE) // array
         {
             outf("\t{\n");
@@ -4528,16 +4018,16 @@ void EspMessageInfo::write_esp()
                 switch(pi->kind)
                 {
                 case TK_BOOL:
-                case TK_SHORT: 
+                case TK_SHORT:
                 case TK_INT: fmt = "d"; break;
                 case TK_UNSIGNED: fmt = "u"; break;
                 case TK_LONG: fmt = "ld"; break;
                 case TK_UNSIGNEDLONG: fmt = "lu"; break;
                 case TK_FLOAT:
                 case TK_DOUBLE: fmt = "g"; break;
-                case TK_null: 
-                case TK_CHAR: fmt = "s"; break; 
-                default: 
+                case TK_null:
+                case TK_CHAR: fmt = "s"; break;
+                default:
                     {
                         char buf[128];
                         sprintf(buf,"Unhandled array type: %s (%s)", getTypeKindName(pi->kind), name_);
@@ -4549,7 +4039,7 @@ void EspMessageInfo::write_esp()
                 outf("\t\tif (v.length()>0)\n");
                 outf("\t\t\tbuffer.append(\"</%s>\");\n", pi->getXmlTag());
             }
-            else if (pi->typname) 
+            else if (pi->typname)
             {
                 if (pi->kind == TK_ESPENUM)
                 {
@@ -4586,7 +4076,7 @@ void EspMessageInfo::write_esp()
                 else
                     outf("\t\t**** TODO: unhandled array: kind=%s, type=%s, name=%s, xsd-type=%s\n", getTypeKindName(pi->kind), pi->typname, uname, pi->getXsdType());
             }
-            else 
+            else
             {
                 outf("\t\t**** TODO: unhandled array: type=<NULL>, name=%s, xsd-type=%s\n", uname, pi->getXsdType());
             }
@@ -4611,7 +4101,7 @@ void EspMessageInfo::write_esp()
             outf("\t\tbuffer.append(\"</%s>\");\n",pi->getXmlTag());
             outs("\t}\n");
         }
-        else 
+        else
         {
             esp_xlate_info* info = esp_xlat(pi);
             switch(info->access_kind)
@@ -4691,8 +4181,6 @@ void EspMessageInfo::write_esp()
                 break;
             }
         }
-        //if (hasIf) outs("\t}\n");
-
         free(uname);
     }
 
@@ -4733,16 +4221,16 @@ void EspMessageInfo::write_esp()
                 switch(pi->kind)
                 {
                 case TK_BOOL:
-                case TK_SHORT: 
+                case TK_SHORT:
                 case TK_INT: fmt = "d"; break;
                 case TK_UNSIGNED: fmt = "u"; break;
                 case TK_LONG: fmt = "ld"; break;
                 case TK_UNSIGNEDLONG: fmt = "lu"; break;
                 case TK_FLOAT:
                 case TK_DOUBLE: fmt = "g"; break;
-                case TK_null: 
-                case TK_CHAR: fmt = "s"; break; 
-                default: 
+                case TK_null:
+                case TK_CHAR: fmt = "s"; break;
+                default:
                     {
                         char buf[128];
                         sprintf(buf,"Unhandled array type: %s (%s)", getTypeKindName(pi->kind), name_);
@@ -4759,7 +4247,7 @@ void EspMessageInfo::write_esp()
                 else
                     indentOutf("buffer.append(\"</%s>\");\n", pi->getXmlTag());
             }
-            else if (pi->typname) 
+            else if (pi->typname)
             {
                 indentOutf("IArrayOf<IConst%s>& v = src.get%s();\n",pi->typname,uname);
                 indentOuts("int size = v.length();\n");
@@ -4785,7 +4273,7 @@ void EspMessageInfo::write_esp()
                 else
                     indentOutf("buffer.append(\"</%s>\");\n", pi->getXmlTag());
             }
-            else 
+            else
             {
                 indentOutf("**** TODO: unhandled array: type=%s, name=%s, xsd-type=%s\n", pi->typname, uname, pi->getXsdType());
             }
@@ -4811,7 +4299,7 @@ void EspMessageInfo::write_esp()
             }
             indentOutf(-1,"}\n");
         }
-        else 
+        else
         {
             esp_xlate_info* info = esp_xlat(pi);
             switch(info->access_kind)
@@ -4824,7 +4312,7 @@ void EspMessageInfo::write_esp()
                     indentOutf("if (s && *s)\n");
                     indentInc(1);
                 }
-                    
+
                 if (!getMetaInt("encode",1))
                 {
                     indentOutf("buffer.appendf(\"<%s>%%s</%s>\",s);\n",pi->name,pi->name);
@@ -4934,12 +4422,12 @@ void EspMessageInfo::write_esp()
     {
         outf("\nvoid C%s::appendContent(IEspContext* ctx, MemoryBuffer& buffer, StringBuffer &mimetype)\n{\n", name_);
         esp_xlate_info *xinfo = esp_xlat(contentVar);
-        
+
         if (strcmp(xinfo->store_type, "StringBuffer")!=0)
             outf("\tbuffer.clear().append(m_%s.getValue());\n", contentVar->name);
         else
             outf("\tbuffer.clear().append(m_%s.getValue().length(), m_%s.getValue().str());\n", contentVar->name, contentVar->name);
-        
+
         outf("\tmimetype.set(m_%s_mimetype.str());\n", contentVar->name);
         outs("}\n");
     }
@@ -4956,26 +4444,26 @@ void EspMessageInfo::write_esp()
         //method: localUnserialize(IRcpMessage...)
         outf("\nbool C%s::localUnserialize(IRpcMessage& rpc_request, const char *tagname, const char *basepath)\n{\n", name_);
     }
-    
+
     outs("\trpc_request.setEncodeXml(false);\n");
     outs("\tbool hasValue = false;\n");
-    
+
     if (espm_type_==espm_response)
     {
         outs(
             "\tStringBuffer xml;\n"
             "\trpc_request.get_value(\"Exceptions\", xml, false);\n\n"
-            
+
             "\tOwned<IMultiException> me = MakeMultiException();\n"
             "\tif(xml.length() > 0)\n"
             "\t\tme->deserialize(xml.str());\n\n"
-            
+
             "\tif (me->ordinality() > 0 )\n"
             "\t{\n"
             "\t\tIArrayOf<IException>& exceptions = me->getArray();\n"
             "\t\tForEachItemIn(i, exceptions)\n"
             "\t\t\tnoteException(*LINK(&exceptions.item(i)));\n"
-            "\t}\n"     
+            "\t}\n"
             "\telse\n"
             "\t{\n");
     }
@@ -4989,14 +4477,14 @@ void EspMessageInfo::write_esp()
     {
         outs(1, "hasValue |= rpc_request.get_value(basepath, m_tag_value);\n");
     }
-            
+
     if (espm_type_==espm_response)
         outs("\t}\n");
 
     outs("\treturn hasValue;\n");
-    
+
     outs("}\n");
-    
+
     //=============================================================================================================
     //method: unserialize(CSoapValue...)
     if (parent)
@@ -5031,7 +4519,7 @@ void EspMessageInfo::write_esp()
         outf("\tif(!localOnly)\n");
         outf("\t\thasValue |= C%s::unserialize(ctx,params,attachments, basepath);\n", parent);
     }
-    else 
+    else
     {
         outf("\nbool C%s::unserialize(IEspContext* ctx, IProperties& params, MapStrToBuf *attachments, const char *basepath)\n{\n", name_);
         outf("\tbool hasValue = false;\n");
@@ -5059,9 +4547,9 @@ void EspMessageInfo::write_esp()
 
     outs("\treturn hasValue;\n");
     outs("}\n");
-    
+
     //outf("\n\tvoid C%s::unserialize(const char * msg)\n\t{\n", name_);
-    
+
     //for (pi=getParams();pi!=NULL;pi=pi->next)
     //{
     //  pi->write_esp_unmarshall("msg");
@@ -5070,33 +4558,10 @@ void EspMessageInfo::write_esp()
 
     outs("\n");
     write_esp_methods();
-    
-    //outs("};\n\n");
-    
-    write_factory_impl();
-}
 
-void EspMessageInfo::write_clarion_methods(enum espaxm_type axstype)
-{
-    ParamInfo *pi;
-    
-    if (axstype!=espaxm_setters)
-    {
-        if (espm_type_==espm_response)
-            outs("queryClientStatus  PROCEDURE(),LONG,PROC\n");
-        for (pi=getParams();pi!=NULL;pi=pi->next)
-        {
-            pi->write_clarion_attr_method(false);
-        }
-    }
-    
-    if (axstype!=espaxm_getters)
-    {
-        for (pi=getParams();pi!=NULL;pi=pi->next)
-        {
-            pi->write_clarion_attr_method(true);
-        }
-    }
+    //outs("};\n\n");
+
+    write_factory_impl();
 }
 
 void EspMessageInfo::write_esp_mapinfo(bool isDecl)
@@ -5131,7 +4596,7 @@ char* makeXsdType(const char* s)
 void EspMessageInfo::write_esp_methods(enum espaxm_type axstype, bool isDecl, bool isPure)
 {
     ParamInfo *pi;
-    
+
 
     if (axstype!=espaxm_setters)
     {
@@ -5143,7 +4608,7 @@ void EspMessageInfo::write_esp_methods(enum espaxm_type axstype, bool isDecl, bo
                 free(xsd);
         }
     }
-    
+
     if (axstype!=espaxm_getters)
     {
         for (pi=getParams();pi!=NULL;pi=pi->next)
@@ -5252,25 +4717,25 @@ void EspMessageInfo::write_cpp_interfaces()
         assert(!"Code shouldn't be reached");
         break;
     }
-    
+
     write_esp_methods(espaxm_getters, true, true);
 
     if (getMetaInt("element")!=0)
         outs(1, "virtual const char * get_tag_value()=0;\n");
 
     outs("};\n\n");
-    
-    
+
+
     outf("interface IEsp%s : extends IConst%s\n{\n", name_, name_);
     write_esp_methods(espaxm_setters, true, true);
     outf("\tvirtual void copy(IConst%s &from)=0;\n", name_);
     if (getMetaInt("element"))
         outs(1, "virtual void set_tag_value(const char *value)=0;\n");
     outs("};\n\n");
-    
+
     outf("interface IClient%s : extends IInterface\n", name_);
     outs("{\n");
-    
+
     switch (espm_type_)
     {
     case espm_request:
@@ -5291,10 +4756,10 @@ void EspMessageInfo::write_cpp_interfaces()
         break;
     case espm_enum:
     case espm_none:
-        assert(!"Code shouldn't be reached"); 
+        assert(!"Code shouldn't be reached");
         break;
     }
-    
+
     outs("};\n\n");
 }
 
@@ -5338,28 +4803,6 @@ void EspMessageInfo::write_factory_impl()
     default:
         assert(!"Unhandled espm type");
     }
-}
-
-
-void EspMessageInfo::write_clarion_include_interface()
-{
-    static char ifname[256];
-    strcpy(ifname, "cppClient");
-    strcat(ifname, name_);
-    
-    outf("%s  INTERFACE(cppInterface),COM\n", ifname);
-    
-    if (espm_type_==espm_struct)
-    {
-        write_clarion_methods(espaxm_setters);
-        write_clarion_methods(espaxm_getters);
-    }
-    else if (espm_type_==espm_request)
-        write_clarion_methods(espaxm_setters);
-    else
-        write_clarion_methods(espaxm_getters);
-    
-    outs("    END\n\n");
 }
 
 
@@ -5484,23 +4927,32 @@ struct HidlAccessMapReporter : public HidlAccessMapGenerator::Reporter
     }
 
 protected:
+
+    __attribute__((format(printf,2,0)))
     void reportError(const char* fmt, va_list& args) const override
     {
         reportSomething("\nERROR: ", fmt, args);
     }
+
+    __attribute__((format(printf,2,0)))
     void reportWarning(const char* fmt, va_list& args) const override
     {
         reportSomething("//WARNING: ", fmt, args);
     }
+
+    __attribute__((format(printf,2,0)))
     void reportInfo(const char* fmt, va_list& args) const override
     {
         reportSomething("//INFO: ", fmt, args);
     }
+
+    __attribute__((format(printf,2,0)))
     void reportDebug(const char* fmt, va_list& args) const override
     {
         reportSomething("//DEBUG: ", fmt, args);
     }
 
+    __attribute__((format(printf,3,0)))
     inline void reportSomething(const char* prefix, const char* fmt, va_list& args) const
     {
         outs(prefix);
@@ -5527,7 +4979,6 @@ void writeAccessMap(int indentLevel, EspServInfo& svci, const char* serviceName,
 void EspServInfo::write_esp_binding_ipp()
 {
     EspMethodInfo *mthi=NULL;
-    int useMethodName = getMetaInt("use_method_name", 0);
 
     outf("\n\nclass C%sSoapBinding : public CHttpSoapBinding\n", name_);
     outs("{\npublic:\n");
@@ -5537,6 +4988,12 @@ void EspServInfo::write_esp_binding_ipp()
     outf("\tC%sSoapBinding(IPropertyTree* cfg, const char *bindname=NULL, const char *procname=NULL, http_soap_log_level level=hsl_none);\n", name_);
 
     outs("\tvirtual void init_strings();\n");
+    if (executionProfilingEnabled)
+    {
+        outf("#ifdef ESP_SERVICE_%s\n", name_);
+        outs("\tvirtual void init_metrics();\n");
+        outf("#endif\n");
+    }
     outs("\tvirtual unsigned getCacheMethodCount(){return m_cacheMethodCount;}\n");
 
     //method ==> processRequest
@@ -5595,6 +5052,9 @@ void EspServInfo::write_esp_binding_ipp()
     //Method ==> onGetInstantQuery
     outs("\tvirtual int onGetInstantQuery(IEspContext &context, CHttpRequest* request, CHttpResponse* response, const char *service, const char *method);\n");
 
+    //Method ==> getDefaultClientVersion
+    outs("\tbool getDefaultClientVersion(double &ver);\n");
+
     //Method ==> xslTransform
     if (needsXslt)
     {
@@ -5629,6 +5089,34 @@ void EspServInfo::write_esp_binding_ipp()
         outs("\tvoid setXslProcessor(IInterface *xslp){}\n");
 
     outs("\tunsigned m_cacheMethodCount = 0;\n");
+
+    outs("protected:\n");
+
+    //
+    // Create scaled histogram metric member variables enabled methods
+    // Only output the ifdef if needed
+    bool needIfDef = true;
+    for (mthi = methods; mthi != NULL; mthi = mthi->next)
+    {
+        if (mthi->isExecutionProfilingEnabled())
+        {
+            if (needIfDef)
+            {
+                outf("#ifdef ESP_SERVICE_%s\n", name_);
+                needIfDef = false;
+            }
+            outs("\tstd::shared_ptr<hpccMetrics::ScaledHistogramMetric> ");
+            outs(mthi->getExecutionProfilingMetricVariableName());
+            outs(";\n");
+        }
+    }
+
+    // If false, then ifdef was output, close it
+    if (!needIfDef)
+    {
+        outf("#endif\n");
+    }
+
     outs("};\n\n");
 }
 
@@ -5650,11 +5138,23 @@ void EspServInfo::write_esp_binding()
     StrBuffer servicefeatureurl;
     getMetaStringValue(servicefeatureurl,FEATEACCESSATTRIBUTE);
 
-    outf("\nC%sSoapBinding::C%sSoapBinding(http_soap_log_level level):CHttpSoapBinding(NULL, NULL, NULL, level)\n{\n\tinit_strings();\n\tsetWsdlVersion(%s);", name_, name_, wsdlVer.str());
-    outf("\n}\n");
+    outf("\nC%sSoapBinding::C%sSoapBinding(http_soap_log_level level):CHttpSoapBinding(NULL, NULL, NULL, level)\n", name_, name_);
+    outf("{\n");
+    outf("\tinit_strings();\n");
+    outf("\tsetWsdlVersion(%s);\n", wsdlVer.str());
+    outf("}\n");
 
-    outf("\nC%sSoapBinding::C%sSoapBinding(IPropertyTree* cfg, const char *bindname, const char *procname, http_soap_log_level level):CHttpSoapBinding(cfg, bindname, procname, level)\n{\n\tinit_strings(); \n\tsetWsdlVersion(%s);\n", name_, name_, wsdlVer.str());
-    outf("\n}\n");
+    outf("\nC%sSoapBinding::C%sSoapBinding(IPropertyTree* cfg, const char *bindname, const char *procname, http_soap_log_level level):CHttpSoapBinding(cfg, bindname, procname, level)\n", name_, name_);
+    outf("{\n");
+    outf("\tinit_strings();\n");
+    if (executionProfilingEnabled)
+    {
+        outf("#ifdef ESP_SERVICE_%s\n", name_);
+        outf("\tinit_metrics();\n");
+        outf("#endif\n");
+    }
+    outf("\tsetWsdlVersion(%s);\n", wsdlVer.str());
+    outf("}\n");
 
     outf("\nvoid C%sSoapBinding::init_strings()\n", name_);
     outs("{\n");
@@ -5665,12 +5165,12 @@ void EspServInfo::write_esp_binding()
         StrBuffer val;
         mthi->getMetaStringValue(val,"description");
         if (val.length()) {
-            StrBuffer tmp; 
+            StrBuffer tmp;
             outf("\taddMethodDescription(\"%s\", \"%s\");\n", mthi->getName(), printfEncode(val.str(), tmp).str());
         }
         mthi->getMetaStringValue(val.clear(),"help");
         if (val.length()) {
-            StrBuffer tmp; 
+            StrBuffer tmp;
             outf("\taddMethodHelp(\"%s\", \"%s\");\n", mthi->getName(), printfEncode(val.str(), tmp).str());
         }
         int cacheGlobal = mthi->getMetaInt("cache_global", 0);
@@ -5689,6 +5189,7 @@ void EspServInfo::write_esp_binding()
                 outf("\tsetCacheGroupID(\"%s\", \"%s\");\n", mthi->getName(), methodCacheGroupID.str());
         }
     }
+
     StrBuffer serviceCacheGroupID;
     if (cacheDefined)
     {
@@ -5697,13 +5198,31 @@ void EspServInfo::write_esp_binding()
             serviceCacheGroupID.set(name_);
         outf("\tsetCacheGroupID(nullptr, \"%s\");\n", serviceCacheGroupID.str());
     }
-
     outs("}\n");
-    
+
+    //
+    // Create init_metrics for execution profiling
+    if (executionProfilingEnabled)
+    {
+        outf("#ifdef ESP_SERVICE_%s\n", name_);
+        outf("\nvoid C%sSoapBinding::init_metrics()\n", name_);
+        outs("{\n");
+
+        // For each method with execution profiling enabled, add code to initialize the histogram metric
+        for (mthi = methods; mthi != NULL; mthi = mthi->next) {
+            if (mthi->isExecutionProfilingEnabled()) {
+                outf("\t%s = registerServiceMethodProfilingMetric(queryProcessName(), \"%s\", \"%s\", \"\", \"%s\");\n",
+                     mthi->getExecutionProfilingMetricVariableName(), name_, mthi->getName(), mthi->getExecutionProfilingOptions().c_str());
+            }
+        }
+        outs("}\n");
+        outf("#endif\n");
+    }
+
     outf("\nint C%sSoapBinding::processRequest(IRpcMessage* rpc_call, IRpcMessage* rpc_response)\n", name_);
     outs("{\n");
     outs("\tif(rpc_call == NULL || rpc_response == NULL)\n\t\treturn -1;\n\n");
-    
+
     outs(1, "IEspContext *ctx=rpc_call->queryContext();\n");
     outs(1, "DBGLOG(\"Client version: %g\", ctx->getClientVersion());\n");
     outs(1, "StringBuffer serviceName;\n");
@@ -5713,7 +5232,7 @@ void EspServInfo::write_esp_binding()
     outs(1, "CRpcResponse* response = static_cast<CRpcResponse*>(rpc_response);\n");  //interface must be from a class derived from CRpcResponse
     outs(1, "CHttpRequest* httprequest = thecall->getHttpReq();\n");
     outs(1, "CHttpResponse* httpresponse = response->getHttpResp();\n\n");
-    
+
     outf("\tOwned<IEsp%s> iserv = (IEsp%s*)getService();\n", name_, name_);
     outs("\tif(iserv == NULL)\n");
     outs("\t{\n");
@@ -5734,11 +5253,20 @@ void EspServInfo::write_esp_binding()
     {
         outf("\tif(!stricmp(thecall->get_name(), \"%s\")||!stricmp(thecall->get_name(), \"%s\"))\n", mthi->getName(), mthi->getReq());
         outs("\t{\n");
+
+        // metrics
+        if (mthi->isExecutionProfilingEnabled())
+        {
+            outf("#ifdef ESP_SERVICE_%s\n", name_);
+            outf("\t\thpccMetrics::HistogramExecutionTimer timer(%s);\n", mthi->getExecutionProfilingMetricVariableName());
+            outf("#endif\n");
+        }
+
         //esp_request + esp_response can persist longer than the scope of this method
         outf("\t\tOwned<C%s> esp_request = new C%s(serviceName.str(), thecall);\n", mthi->getReq(), mthi->getReq());
         outs("\t\tcheckRequest(context);\n");
         outf("\t\tOwned<C%s> esp_response = new C%s(serviceName.str());\n", mthi->getResp(), mthi->getResp());
-        
+
         StrBuffer minVer;
         bool hasMinVer = mthi->getMetaVerInfo("min_ver", minVer);
 
@@ -5769,7 +5297,7 @@ void EspServInfo::write_esp_binding()
             outs("\t\tStringBuffer source;\n");
             outf("\t\tsource.appendf(\"%s::%%s()\", thecall->get_name());\n", name_);
             outf("\t\tOwned<IMultiException> me = MakeMultiException(source.str());\n");
-            
+
             outs("\t\ttry\n");
             outs("\t\t{\n");
             if (hasMinVer)
@@ -5787,7 +5315,7 @@ void EspServInfo::write_esp_binding()
                 outf("\t\t\tclearCacheByGroupID(\"%s\");\n", clearCacheGroupIDs.str());
 
             outs("\t\t}\n");
-            
+
             write_catch_blocks(mthi, ct_soapresp, 2);
         }
         else
@@ -5836,11 +5364,11 @@ void EspServInfo::write_esp_binding()
     outs("\tresponse->set_err(msg);\n");
     outs("\treturn -1;\n");
     outs("}\n");
-    
+
     //method ==> getXsdDefinition
     outf("\nint C%sSoapBinding::getXsdDefinition(IEspContext &context, CHttpRequest* request, StringBuffer &content, const char *service, const char *method, bool mda)\n", name_);
     outs("{\n");
-    
+
     outs("\tBoolHash added;\n");
 
     // version
@@ -5882,7 +5410,7 @@ void EspServInfo::write_esp_binding()
             indentOutf("if (context.authorizeFeature(%s, acc) && acc>=SecAccess_Read) {\n", access);
             indentInc(1);
         }
-        
+
         indentOutf("if ((allMethods&&(fullservice||isMethodInSubService(context, service, \"%s\"))) || Utils::strcasecmp(method, \"%s\")==0)\n", mthi->getName(), mthi->getName());
         indentOuts("{\n");
         indentInc(1);
@@ -5901,11 +5429,11 @@ void EspServInfo::write_esp_binding()
     }
     indentOuts("return 0;\n");
     indentOuts(-1,"}\n");
-    
+
     //method ==> getMethodHtmlForm
     outf("\nint C%sSoapBinding::getMethodHtmlForm(IEspContext &context, CHttpRequest* request, const char *serv, const char *method, StringBuffer &page, bool bIncludeFormTag)\n", name_);
     outs("{\n");
-    
+
     outf("\tDBGLOG(\"Client version: %%g\", context.getClientVersion());\n");
 
     for (mthi=methods;mthi!=NULL;mthi=mthi->next)
@@ -5938,10 +5466,10 @@ void EspServInfo::write_esp_binding()
             bool hasMinVer = mthi->getMetaVerInfo("min_ver",minVer);
             bool hasMaxVer = mthi->getMetaVerInfo("max_ver",maxVer);
 
-            outf("\tif ((fullservice || isMethodInSubService(ctx, servname, \"%s\")) && ctx.isMethodAllowed(ver,%s, %s, %s, %s))\n", 
+            outf("\tif ((fullservice || isMethodInSubService(ctx, servname, \"%s\")) && ctx.isMethodAllowed(ver,%s, %s, %s, %s))\n",
                 mthi->getName(), optional, access, hasMinVer ? minVer.str() : "-1",  hasMaxVer ? maxVer.str() : "-1");
             outf("\t\tmethods.append(*new CMethodInfo(\"%s\", \"%s\", \"%s\"));\n", mthi->getName(), method_name, mthi->getResp());
-                
+
         }
     }
     outs("\treturn methods.ordinality();\n");
@@ -5953,7 +5481,7 @@ void EspServInfo::write_esp_binding()
     outf("\tresp.append(\"%s\");\n", name_);
     outs("\treturn resp;\n");
     outs("}\n");
-    
+
     //method ==> isValidServiceName
     outf("\nbool C%sSoapBinding::isValidServiceName(IEspContext &context, const char *name)\n", name_);
     outs("{\n");
@@ -5962,18 +5490,18 @@ void EspServInfo::write_esp_binding()
     outs(1, "else\n");
     outs(2,     "return (hasSubService(context, name));\n");
     outs("}\n");
-    
+
     //method ==> qualifyMethodName
     outf("\nbool C%sSoapBinding::qualifyMethodName(IEspContext &context, const char *methname, StringBuffer *methQName)\n", name_);
     outs("{\n");
-    
+
     outs("\tif (!methname || !*methname)\n");
     outs("\t{\n");
     outs("\t\tif (methQName!=NULL)\n");
     outs("\t\t\tmethQName->clear();\n");
     outs("\t\treturn true;\n");
     outs("\t}\n");
-    
+
     for (mthi=methods;mthi!=NULL;mthi=mthi->next)
     {
         outf("\tif (Utils::strcasecmp(methname, \"%s\")==0)\n", mthi->getName());
@@ -5985,8 +5513,8 @@ void EspServInfo::write_esp_binding()
     }
     outs("\treturn false;\n");
     outs("}\n");
-    
-    
+
+
     //method ==> qualifyServiceName
     outf("\nbool C%sSoapBinding::qualifyServiceName(IEspContext &context, const char *servname, const char *methname, StringBuffer &servQName, StringBuffer *methQName)\n", name_);
     outs("{\n");
@@ -5998,7 +5526,7 @@ void EspServInfo::write_esp_binding()
     outs(1, "}\n");
     outs(1, "return qualifySubServiceName(context, servname, methname, servQName, methQName);\n");
     outs("}\n");
-    
+
     //method ==> onGetFile
     outf("\nint C%sSoapBinding::onGetFile(IEspContext &context, CHttpRequest* request, CHttpResponse* response, const char *pathex)\n", name_);
     outs("{\n");
@@ -6015,11 +5543,11 @@ void EspServInfo::write_esp_binding()
     outs("\tresponse->send();\n");
     outs("\treturn 0;\n");
     outs("}\n");
-    
+
     //Method ==> onGetForm
     outf("\nint C%sSoapBinding::onGetForm(IEspContext &context, CHttpRequest* request, CHttpResponse* response, const char *service, const char *method)\n", name_);
     outs("{\n");
-    
+
     if (getMetaInt("noforms", 0))
     {
         outs("\treturn onGetNotFound(context, request, response, service);\n");
@@ -6066,14 +5594,14 @@ void EspServInfo::write_esp_binding()
             outs("\t}\n");
         }
         outs("\n\treturn EspHttpBinding::onGetForm(context, request, response, service, method);\n");
-    }   
+    }
     outs("}\n");
-    
+
     // method ==> onGetXForm
     outf("int C%sSoapBinding::onGetXForm(IEspContext &context, CHttpRequest* request, CHttpResponse* response, const char *service, const char *method)\n", name_);
     outs("{\n");
     for (mthi=methods;mthi!=NULL;mthi=mthi->next)
-    {       
+    {
         if (mthi->getMetaInt("use_new_form",0))
         {
             outf("\tif (!stricmp(\"%s\", method))\n", mthi->getName());
@@ -6091,13 +5619,13 @@ void EspServInfo::write_esp_binding()
         outs("\treturn onGetNotFound(context, request, response, service);\n");
         outs("}\n");
     }
-    
+
     //Method ==> onGetService
     outf("\nint C%sSoapBinding::onGetService(IEspContext &context, CHttpRequest* request, CHttpResponse* response, const char *service, const char *method, const char *pathex)\n", name_);
     outs("{\n");
     outs("\tif(request == NULL || response == NULL)\n");
     outs("\t\treturn -1;\n");
-    
+
     EspMountInfo *mnt;
     for (mnt=mounts;mnt!=NULL;mnt=mnt->next)
     {
@@ -6122,7 +5650,7 @@ void EspServInfo::write_esp_binding()
         outs("\t\treturn 0;\n");
         outs("\t}\n");
     }
-    
+
     for (mthi=methods;mthi!=NULL;mthi=mthi->next)
     {
         int formIsDefault = mthi->getMetaInt("form_is_default");
@@ -6134,10 +5662,10 @@ void EspServInfo::write_esp_binding()
             outs("\t}\n");
         }
     }
-    
+
     outs("\treturn onGetQuery(context, request, response, service, method);\n");
     outs("}\n");
-    
+
     outf("\n IRpcRequestBinding *C%sSoapBinding::createReqBinding(IEspContext &context, IHttpMessage *ireq, const char *service, const char *method)\n", name_);
     outs("{\n");
     outs(1, "CHttpRequest *request=static_cast<CHttpRequest*>(ireq);\n");
@@ -6151,21 +5679,27 @@ void EspServInfo::write_esp_binding()
     outs(1, "return NULL;\n");
     outs("}\n");
 
-    //Method ==> onGetInstantQuery
-    outf("\nint C%sSoapBinding::onGetInstantQuery(IEspContext &context, CHttpRequest* request, CHttpResponse* response, const char *service, const char *method)\n", name_);
+    //Method ==> getDefaultClientVersion
+    outf("\nbool C%sSoapBinding::getDefaultClientVersion(double &ver)\n", name_);
     outs("{\n");
     StrBuffer defVer;
     bool hasDefVer = getMetaVerInfo(tags,"default_client_version",defVer);
     if (!hasDefVer)
         hasDefVer = getMetaVerInfo(tags,"version",defVer);
     if (hasDefVer)
-    {
-        outf("\tif (context.getClientVersion()<=0)\n");
-        outf("\t\tcontext.setClientVersion(%s);\n\n", defVer.str());
-    }
+        outf("\tver = %s;\n", defVer.str());
+    outf("\treturn %s;\n", hasDefVer ? "true" : "false");
+    outs("}\n");
+
+    //Method ==> onGetInstantQuery
+    outf("\nint C%sSoapBinding::onGetInstantQuery(IEspContext &context, CHttpRequest* request, CHttpResponse* response, const char *service, const char *method)\n", name_);
+    outs("{\n");
+    outf("\tdouble defaultClientVersion = 0.0;\n");
+    outf("\tif ((context.getClientVersion()<=0) && getDefaultClientVersion(defaultClientVersion))\n");
+    outf("\t\tcontext.setClientVersion(defaultClientVersion);\n\n");
     outs("\tif(request == NULL || response == NULL)\n");
     outs("\t\treturn -1;\n");
-    
+
     outs("\tStringBuffer respStr;\n");
     outf("\tOwned<IEsp%s> iserv = (IEsp%s*)getService();\n", name_, name_);
     outs("\tif(iserv == NULL)\n");
@@ -6175,7 +5709,7 @@ void EspServInfo::write_esp_binding()
     outs("\t\tresponse->setContentType(\"text/html\");\n");
     outs("\t\tresponse->send();\n");
     outs("\t}\n");
-    
+
     outs("\telse\n");
     outs("\t{\n");
 
@@ -6211,7 +5745,14 @@ void EspServInfo::write_esp_binding()
         {
             outf("\t\tif(!stricmp(method, \"%s\")||!stricmp(method, \"%s\"))\n", mthi->getName(), mthi->getReq());
             outs("\t\t{\n");
-            
+
+            if (mthi->isExecutionProfilingEnabled())
+            {
+                outf("#ifdef ESP_SERVICE_%s\n", name_);
+                outf("\t\t\thpccMetrics::HistogramExecutionTimer timer(%s);\n", mthi->getExecutionProfilingMetricVariableName());
+                outf("#endif\n");
+            }
+
             outf("\t\t\tOwned<C%s> esp_request = new C%s(&context, \"%s\", request->queryParameters(), request->queryAttachments());\n", mthi->getReq(), mthi->getReq(), name_);
             outf("\t\t\tcheckRequest(context);\n");
             outf("\t\t\tC%s* resp = new C%s(\"%s\");\n", mthi->getResp(), mthi->getResp(), name_);
@@ -6237,7 +5778,7 @@ void EspServInfo::write_esp_binding()
                 if (clearCacheGroupIDs.length() > 0)
                     outf("\t\t\t\tclearCacheByGroupID(\"%s\");\n", clearCacheGroupIDs.str());
                 outs("\t\t\t}\n");
-                
+
                 write_catch_blocks(mthi, ct_httpresp, 3);
             }
             else
@@ -6255,16 +5796,24 @@ void EspServInfo::write_esp_binding()
         {
             outf("\t\tif(!stricmp(method, \"%s\")||!stricmp(method, \"%s\"))\n", mthi->getName(), mthi->getReq());
             outs("\t\t{\n");
+
+            if (mthi->isExecutionProfilingEnabled())
+            {
+                outf("#ifdef ESP_SERVICE_%s\n", name_);
+                outf("\t\t\thpccMetrics::HistogramExecutionTimer timer(%s);\n", mthi->getExecutionProfilingMetricVariableName());
+                outf("#endif\n");
+            }
+
             outf("\t\t\tOwned<C%s> esp_request = new C%s(&context, \"%s\", request->queryParameters(), request->queryAttachments());\n", mthi->getReq(), mthi->getReq(), name_);
             outf("\t\t\tcheckRequest(context);\n");
             outf("\t\t\tOwned<C%s> esp_response = new C%s(\"%s\");\n", mthi->getResp(), mthi->getResp(), name_);
-            
+
             if (bHandleExceptions)
             {
                 outs("\t\t\tStringBuffer source;\n");
                 outf("\t\t\tsource.appendf(\"%s::%%s()\", method);\n", name_);
                 outf("\t\t\tOwned<IMultiException> me = MakeMultiException(source.str());\n");
-                
+
                 //begin try block
                 outs("\t\t\ttry\n");
                 outs("\t\t\t{\n");
@@ -6272,7 +5821,7 @@ void EspServInfo::write_esp_binding()
                 if (clearCacheGroupIDs.length() > 0)
                     outf("\t\t\t\tclearCacheByGroupID(\"%s\");\n", clearCacheGroupIDs.str());
                 outs("\t\t\t}\n");
-                
+
                 write_catch_blocks(mthi, ct_httpresp,3);
             }
             else
@@ -6288,7 +5837,7 @@ void EspServInfo::write_esp_binding()
             outs("\t\t\t}\n");
             outs("\t\t\telse\n");
             outs("\t\t\t{\n");
-            
+
             outs("\t\t\t\tIProperties *props=request->queryParameters();\n");
             outs("\t\t\t\tif (skipXslt(context))\n");
             outs("\t\t\t\t{\n");
@@ -6301,7 +5850,7 @@ void EspServInfo::write_esp_binding()
             outs("\t\t\t\t}\n");
             outs("\t\t\t\telse\n");
             outs("\t\t\t\t{\n");
-            
+
             outs("\t\t\t\t\tStringBuffer xml;\n");
             outs("\t\t\t\t\tStringBuffer sResponse;\n");
             if (bClientXslt)
@@ -6326,15 +5875,15 @@ void EspServInfo::write_esp_binding()
                 outf("\t\t\t\t\txslTransform(xml.str(), StringBuffer(getCFD()).append(%s).str(), sResponse.clear(), context.queryXslParameters());\n", respXsl);
             }
             outf("\t\t\t\t\tresponse->setContentType(%s);\n", respContentType);
-            
+
             needsXslt = true;
-            
+
             if (bClientXslt)
                 outs("\t\t\t\t\t}\n");
 
             outs("\t\t\t\t\tresponse->setContent(sResponse.str());\n");
             outs("\t\t\t\t}\n");
-            
+
             outs("\t\t\t\tresponse->send();\n");
             outs("\t\t\t}\n");
             outs("\t\t\treturn 0;\n");
@@ -6350,22 +5899,22 @@ void EspServInfo::write_esp_binding()
     indentOuts(1,"response->redirect(*request, esp_response->getRedirectUrl());\n");
     indentOuts(-1,"else\n");
     indentOuts("{\n");
-    
+
     indentOuts(1,"MemoryBuffer content;\n");
     indentOuts("StringBuffer mimetype;\n");
     indentOuts("esp_response->appendContent(&context,content, mimetype);\n");
     indentOuts("onBeforeSendResponse(context,request,content,service,method);\n");
     indentOuts("response->setContent(content.length(), content.toByteArray());\n");
     indentOuts("response->setContentType(mimetype.str());\n");
-    
+
     indentOuts("response->send();\n");
     indentOuts(-1,"}\n");
     indentOuts("return 0;\n");
     indentOuts(-1,"}\n");
     outs("\t}\n");
-    
+
     outs("\treturn onGetNotFound(context, request,  response, service);\n");
-    outs("}\n");    
+    outs("}\n");
 }
 
 
@@ -6391,21 +5940,21 @@ void EspServInfo::write_catch_blocks(EspMethodInfo* mthi, catch_type ct, int ind
     outs(indents+1,"me->append(*mex);\n");
     outs(indents+1,"mex->Release();\n");
     outs(indents,"}\n");
-    
+
     //catch IException
     outs(indents,"catch (IException* e)\n");
     outs(indents,"{\n");
-    
+
     outs(indents+1,"me->append(*e);\n");
     outs(indents,"}\n");
-    
+
     //catch ...
     outs(indents,"catch (...)\n");
     outs(indents,"{\n");
-    
+
     outs(indents+1,"me->append(*MakeStringExceptionDirect(-1, \"Unknown Exception\"));\n");
     outs(indents,"}\n");
-    
+
     //apply any xslt on the error(s), if it is specified in scm file
     //
     if (errorXslt)
@@ -6480,15 +6029,13 @@ void EspServInfo::write_esp_service()
 
 void EspServInfo::write_esp_client_ipp()
 {
-    int useMethodName = getMetaInt("use_method_name", 0);
-    
     outf("class CClient%s : public CInterface,\n", name_);
     outf("\timplements IClient%s\n", name_);
     outs("{\nprotected:\n");
     outs("\tStringBuffer soap_proxy;\n");
     outs("\tStringBuffer soap_url;\n");
     //dom
-    
+
 
     outs("\tStringBuffer soap_userid;\n");
     outs("\tStringBuffer soap_password;\n");
@@ -6514,7 +6061,7 @@ void EspServInfo::write_esp_client_ipp()
     //domsetUsernameToken
     outs("\tvirtual void setUsernameToken(const char *userid,const char *password,const char *realm)\n\t{\n\t\t soap_userid.set(userid);\n\t\t soap_password.set(password);\n\t\t soap_realm.set(realm);\n\t}\n");
     outs("\tvirtual void setAction(const char *action)\n\t{\n\t\tsoap_action.set(action);\n\t}\n");
-    
+
     EspMethodInfo *mthi;
     for (mthi=methods;mthi!=NULL;mthi=mthi->next)
     {
@@ -6525,9 +6072,9 @@ void EspServInfo::write_esp_client_ipp()
         mthi->write_esp_method(name_, true, false);
 
     }
-    
+
     outs("\tstatic int transferThunkEvent(void *data);\n");
-    
+
 
     outs("#ifdef _WIN32\n");
     outs("\tstatic void espWorkerThread(void* data);\n");
@@ -6558,9 +6105,9 @@ void EspServInfo::write_esp_client()
         outs("\trequest->setUrl(soap_url.str());\n");
         if (useMethodName)
             outf("\trequest->setMsgName(\"%s\");\n", mthi->getName());
-        
+
         outs("\treturn request;\n}\n");
-        
+
         outf("\nIClient%s * CClient%s::%s(IClient%s *request)\n", mthi->getResp(), name_, mthi->getName(), mthi->getReq());
         outs("{\n");
         outs("\tif(soap_url.length()== 0){ throw MakeStringExceptionDirect(-1, \"url not set\"); }\n\n");
@@ -6575,7 +6122,7 @@ void EspServInfo::write_esp_client()
         outs("\tesprequest->post(soap_proxy.str(), soap_url.str(), *espresponse, soapaction);\n");
         outs("\treturn espresponse.getClear();\n");
         outs("}\n");
-        
+
         outf("\nvoid CClient%s::async_%s(IClient%s *request, IClient%sEvents *events,IInterface* state)\n", name_, mthi->getName(), mthi->getReq(), name_);
         outs("{\n");
         outs("\tif(soap_url.length()==0){ throw MakeStringExceptionDirect(-1, \"url not set\"); }\n\n");
@@ -6596,7 +6143,7 @@ void EspServInfo::write_esp_client()
         outs("\tif(state!=NULL)\n");
         outs("\t\tstate->Link();\n\n");
 
-        
+
         outs("#ifdef _WIN32\n");
         outs("\t_beginthread(espWorkerThread, 0, (void *)(IRpcRequestBinding *)(esprequest));\n");
         outs("#else\n");
@@ -6622,7 +6169,7 @@ void EspServInfo::write_esp_client()
 
         mthi->write_esp_method(name_, false, false);
     }
-    
+
     outf("\nint CClient%s::transferThunkEvent(void *data)\n", name_);
     outs("{\n");
     outs("\tIRpcResponseBinding *response = (IRpcResponseBinding *)data;\n");
@@ -6630,7 +6177,7 @@ void EspServInfo::write_esp_client()
     outs("\t{\n");
     outf("\t\tIClient%sEvents *eventSink = (IClient%sEvents *)response->getEventSink();\n", name_, name_);
     outs("\t\tresponse->lock();\n\n");
-    
+
     for (mthi=methods;mthi!=NULL;mthi=mthi->next)
     {
         outf(2, "if (stricmp(response->getMethod(), \"%s\")==0)\n", mthi->getName());
@@ -6643,7 +6190,7 @@ void EspServInfo::write_esp_client()
         outf(5,    "eventSink->on%sError(icresp,response->queryState());\n", mthi->getName());
         outs(3, "}\n");
         outs(2, "}\n");
-    }        
+    }
     outs("\t\tresponse->unlock();\n");
     outs("\t}\n");
     outs("\treturn 0;\n");
@@ -6669,16 +6216,16 @@ void EspServInfo::write_esp_client()
     outf("void *CClient%s::espWorkerThread(void *data)\n", name_);
     outf("#endif\n");
 
-    
+
     outs("{\n");
     outs("\tIRpcRequestBinding *request = (IRpcRequestBinding *) data;\n\n");
-    
+
     outs("\tif (request != NULL)\n");
     outs("\t{\n");
     outs("\t\trequest->lock();\n");
-    
+
     outf("\t\tIRpcResponseBinding *response=create%sResponseObject(request);\n",name_);
-    
+
     /*
     const char *preif="";
     for (mthi=methods;mthi!=NULL;mthi=mthi->next)
@@ -6689,7 +6236,7 @@ void EspServInfo::write_esp_client()
     }
     outf("\tresponse = createResponseObject(request);\n");
     */
-    
+
     outs(2, "if (response!=NULL)\n");
     outs(2, "{\n");
     outs(3,     "try{\n");
@@ -6711,7 +6258,7 @@ void EspServInfo::write_esp_client()
     outs("#else\n");
     outs("\t\ttransferThunkEvent((void *)response);\n");
     outs("#endif\n");
-    
+
     outs("\t\trequest->unlock();\n");
 
     outs("\t\tif(request->queryState()!=NULL)\n");
@@ -6720,7 +6267,7 @@ void EspServInfo::write_esp_client()
     outs("\t\tif(response!=NULL)\n");
     outs("\t\t\tresponse->Release();\n\n");
 
-    
+
     outs("\t\trequest->Release();\n");
 
     outs("\t}\n");
@@ -6734,45 +6281,13 @@ void EspServInfo::write_esp_client()
     outs("}\n\n");
 }
 
-void EspServInfo::write_clarion_include_interface()
-{
-    
-    outf("cppClient%sEvents INTERFACE(cppInterface),COM\n", name_);
-    
-    EspMethodInfo *mthi;
-    for (mthi=methods;mthi!=NULL;mthi=mthi->next)
-    {
-        outf("on%sComplete PROCEDURE(*cppClient%s resp),PROC\n", mthi->getName(), mthi->getResp());
-        outf("on%sError PROCEDURE(*cppClient%s resp),PROC\n", mthi->getName(), mthi->getResp());
-    }
-    
-    outs("\n END\n\n");
-    
-    
-    outf("cppClient%s INTERFACE(cppInterface),COM\n", name_);
-    outs("setProxyAddress  PROCEDURE(CONST *CSTRING address),PROC\n");
-    outs("addServiceUrl  PROCEDURE(CONST *CSTRING url),PROC\n");
-    outs("removeServiceUrl  PROCEDURE(CONST *CSTRING url),PROC\n");
-    outs("setUsernameToken  PROCEDURE(CONST *CSTRING Username,CONST *CSTRING Password,CONST *CSTRING Realm ),PROC\n");
-    
-    
-    for (mthi=methods;mthi!=NULL;mthi=mthi->next)
-    {
-        outf("create%sRequest  PROCEDURE(),*cppClient%s,PROC\n", mthi->getName(), mthi->getReq());//mthi->getName());
-        outf("%s  PROCEDURE(*cppClient%s request),*cppClient%s,PROC\n", mthi->getName(), mthi->getReq(), mthi->getResp());
-        outf("async_%s  PROCEDURE(*cppClient%s request, *cppClient%sEvents events,*cppInterface State),PROC\n", mthi->getName(), mthi->getReq(), name_);
-    }
-        
-    outs("\n  END\n\n");
-}
-
 //interface IEspInstantEcl
 
 void EspServInfo::write_event_interface()
 {
     outf("interface IClient%sEvents : extends IInterface\n", name_);
     outs("{");
-    
+
     EspMethodInfo *mthi;
     for (mthi=methods;mthi!=NULL;mthi=mthi->next)
     {
@@ -6780,23 +6295,22 @@ void EspServInfo::write_event_interface()
         outf("\tvirtual int on%sComplete(IClient%s *resp,IInterface* state)=0;\n", mthi->getName(), mthi->getResp());
         outf("\tvirtual int on%sError(IClient%s *resp,IInterface* state)=0;", mthi->getName(), mthi->getResp());
     }
-    
+
     outs("\n};\n\n");
 }
-
 
 void EspServInfo::write_esp_interface()
 {
     outf("interface IEsp%s : extends IEspService\n", name_);
     outs("{");
-    
+
     EspMethodInfo *mthi;
     for (mthi=methods;mthi!=NULL;mthi=mthi->next)
     {
         outs("\n");
         outf("\tvirtual bool on%s(IEspContext &context, IEsp%s &req, IEsp%s &resp)=0;", mthi->getName(), mthi->getReq(), mthi->getResp());
     }
-    
+
     outs("\n};\n\n");
 }
 
@@ -6804,13 +6318,13 @@ void EspServInfo::write_client_interface()
 {
     outf("interface IClient%s : extends IInterface\n", name_);
     outs("{\n");
-    
+
     outs("\tvirtual void setProxyAddress(const char *address)=0;\n");
     outs("\tvirtual void addServiceUrl(const char *url)=0;\n");
     outs("\tvirtual void removeServiceUrl(const char *url)=0;\n");
     outs("\tvirtual void setUsernameToken(const char *userName,const char *passWord,const char *realm)=0;\n");
     outs("\tvirtual void setAction(const char *action)=0;\n");
-    
+
     EspMethodInfo *mthi;
     for (mthi=methods;mthi!=NULL;mthi=mthi->next)
     {
@@ -6819,7 +6333,7 @@ void EspServInfo::write_client_interface()
         outf("\tvirtual IClient%s * %s(IClient%s *request)=0;\n", mthi->getResp(), mthi->getName(), mthi->getReq());
         outf("\tvirtual void async_%s(IClient%s *request, IClient%sEvents *events,IInterface* state=0)=0;\n", mthi->getName(), mthi->getReq(), name_);
     }
-    
+
     //add the new "flattened" client methods at the end
     outs("\n");
     for (mthi=methods;mthi!=NULL;mthi=mthi->next)
@@ -6880,8 +6394,8 @@ void EspServInfo::sortMethods()
 
 char* getTargetBase(const char* outDir, const char* src)
 {
-    if (outDir && *outDir) 
-    { 
+    if (outDir && *outDir)
+    {
         size_t dirlen = strlen(outDir);
         size_t srclen = strlen(src);
         char* buf = (char*)malloc(dirlen+srclen+5);
@@ -6909,17 +6423,17 @@ char* getTargetBase(const char* outDir, const char* src)
                 else
                     buf[len++] = '/';
             }
-            
+
             strcpy(buf+len,outDir);
         }
 
         size_t len = strlen(buf);
-        if (buf[len-1]=='/' || buf[len-1]=='\\') 
+        if (buf[len-1]=='/' || buf[len-1]=='\\')
         {
             buf[len-1]=0;
             len--;
         }
-        
+
         // now buf has the directory name for output: make the directory if not exist
         createDirectory(buf);
 
@@ -6948,16 +6462,15 @@ HIDLcompiler::HIDLcompiler(const char * sourceFile,const char *outDir)
     servs = NULL;
     msgs = NULL;
     includes = NULL;
-    
+
     filename = strdup(sourceFile);
-    size_t l = strlen(filename);
     yyin = fopen(sourceFile, "rt");
     if (!yyin) {
         printf("Fatal Error: Cannot read %s\n",sourceFile);
         exit(1);
     }
     packagename = gettail(sourceFile);
-    
+
     char* targetBase = getTargetBase(outDir, sourceFile);
 
     ho = createFile(targetBase,"hpp");
@@ -6965,8 +6478,7 @@ HIDLcompiler::HIDLcompiler(const char * sourceFile,const char *outDir)
 #if 0
     xsvo = createFile(targetBase, "xsv");
 #endif
-    clwo = createFile(targetBase, "int");
-    
+
     espx = isESP ? createFile(targetBase,"esp") : -1;
     espng = isESPng ? createFile(targetBase,"_esp_ng", "ipp") : -1;
     espngc= isESPng ? createFile(targetBase,"_esp_ng", "cpp") : -1;
@@ -6982,7 +6494,6 @@ HIDLcompiler::~HIDLcompiler()
     close(ho);
     close(cppo);
     //close(xsvo);
-    close(clwo);
     safeclose(espx);
     safeclose(espng);
     safeclose(espngc);
@@ -7017,6 +6528,7 @@ void HIDLcompiler::Process()
     //write_example_implementation_module();
     if (isESP)
     {
+        processExecutionProfiling();
         write_esp();
         write_esp_ex_ipp();
     }
@@ -7025,38 +6537,90 @@ void HIDLcompiler::Process()
         write_esp_ng();
         write_esp_ng_cpp();
     }
-    
-    if (isSCM)
-        write_clarion_HRPC_interfaces();
+
 }
 
+
+void HIDLcompiler::processExecutionProfiling()
+{
+    EspServInfo *si;
+    for (si=servs; si; si=si->next)
+    {
+        StrBuffer serviceProfilingOptions;
+        si->executionProfilingEnabled = si->getMetaStringValue(serviceProfilingOptions,"profile_execution");
+
+        //
+        // Go through each method and save any profile information to make if faster later when
+        // generating code. Note that the default for the method is either what is specified in the
+        // method or what is set at the service level. Still track the executionProfileEnabled flag for HIDL at the top
+        EspMethodInfo *mthi=NULL;
+        for (mthi=si->methods;mthi!=NULL;mthi=mthi->next)
+        {
+            //
+            // Collect method profile execution values
+            StrBuffer methodProfilingOptions;
+            bool methodProfileExecutionEnabled = mthi->getMetaStringValue(methodProfilingOptions, "profile_execution");
+            si->executionProfilingEnabled |= methodProfileExecutionEnabled;   // again, if a method is enabled, set top flag
+            if (si->executionProfilingEnabled || methodProfileExecutionEnabled)
+            {
+                if (!mthi->getMetaInt("no_profile_execution"))
+                {
+                    mthi->setExecutionProfilingEnabled();
+                    mthi->setExecutionProfilingOptions(methodProfileExecutionEnabled ? methodProfilingOptions.str() : serviceProfilingOptions.str());
+                }
+            }
+        }
+    }
+}
+
+
+bool HIDLcompiler::isProcessExecutionEnabled()
+{
+    EspServInfo *si;
+    for (si=servs;si;si=si->next)
+    {
+        if (si->executionProfilingEnabled)
+        {
+            return true;
+        }
+    }
+    return false;
+}
 
 void HIDLcompiler::write_esp()
 {
     //create the *.esp file
     gOutfile = espx;
     outf("// *** Source file generated by " HIDL " Version %s from %s.%s ***\n", HIDLVER, packagename, srcFileExt);
-    outf("// *** Not to be hand edited (changes will be lost on re-generation) ***\n\n"); 
-    
+    outf("// *** Not to be hand edited (changes will be lost on re-generation) ***\n\n");
+
     outf("#ifndef %s_ESPGEN_INCLUDED\n", packagename);
     outf("#define %s_ESPGEN_INCLUDED\n\n", packagename);
     outf("#include \"%s_esp.ipp\"\n", packagename);
+
+    // If any defined service has execution profiling enabled, add the required includes
+    if (isProcessExecutionEnabled())
+    {
+        outs("#include \"espcommon.hpp\"\n");
+        outs("#include \"jmetrics.hpp\"\n");
+    }
+
     outs("\n");
     outs("#ifdef _WIN32\n");
     outs("#include \"edwin.h\"\n");
     outs("#include <process.h>\n");
     outs("#endif\n");
-    
+
     outs("\n\n");
-    
+
     EspMessageInfo * mi;
-    for (mi=msgs;mi;mi=mi->next) 
+    for (mi=msgs;mi;mi=mi->next)
     {
         mi->write_esp();
     }
-    
+
     EspServInfo *si;
-    for (si=servs;si;si=si->next) 
+    for (si=servs;si;si=si->next)
     {
         si->write_esp_binding();
         outs("\n\n");
@@ -7067,13 +6631,13 @@ void HIDLcompiler::write_esp()
         si->write_factory_impl();
         outs("\n\n");
     }
-    
+
     outf("#endif //%s_ESPGEN_INCLUDED\n", packagename);
 
     gOutfile = espc;
     outf("// *** Source file generated by " HIDL " Version %s from %s.%s ***\n", HIDLVER, packagename, srcFileExt);
-    outf("// *** Not to be hand edited (changes will be lost on re-generation) ***\n\n"); 
-    
+    outf("// *** Not to be hand edited (changes will be lost on re-generation) ***\n\n");
+
     outf("#include \"%s.esp\"\n", packagename);
     outs("\n\n");
 }
@@ -7082,8 +6646,8 @@ void HIDLcompiler::write_esp_ex_ipp()
 {
     gOutfile = espi;
     outf("// *** Source file generated by " HIDL " Version %s from %s.%s ***\n", HIDLVER, packagename, srcFileExt);
-    outf("// *** Not to be hand edited (changes will be lost on re-generation) ***\n\n"); 
-    
+    outf("// *** Not to be hand edited (changes will be lost on re-generation) ***\n\n");
+
     outf("#ifndef %s_EX_ESPGEN_INCLUDED\n", packagename);
     outf("#define %s_EX_ESPGEN_INCLUDED\n\n", packagename);
     outs("#pragma warning( disable : 4786)\n\n");
@@ -7102,17 +6666,22 @@ void HIDLcompiler::write_esp_ex_ipp()
     outs("#include \"SOAP/client/soapclient.hpp\"\n");
     outs("\n\n");
 
+    // metrics execution profiling requires the memory header
+    if (isProcessExecutionEnabled())
+    {
+        outs("#include <memory>\n");
+    }
+
     outf("namespace %s\n{\n\n", packagename);
 
     EspMessageInfo * mi;
-    for (mi=msgs;mi;mi=mi->next) 
+    for (mi=msgs;mi;mi=mi->next)
     {
         mi->write_esp_ipp();
     }
-    
-    
+
     EspServInfo *si;
-    for (si=servs;si;si=si->next) 
+    for (si=servs;si;si=si->next)
     {
         si->write_esp_service_ipp();
         outs("\n\n");
@@ -7121,7 +6690,7 @@ void HIDLcompiler::write_esp_ex_ipp()
         si->write_esp_client_ipp();
         outs("\n\n");
     }
-    
+
     outs("}\n");
     outf("using namespace %s;\n\n", packagename);
 
@@ -7133,116 +6702,16 @@ void HIDLcompiler::write_source_file_classes()
 {
     gOutfile = cppo;
     outf("// *** Source file generated by " HIDL " Version %s from %s.%s ***\n", HIDLVER, packagename, srcFileExt);
-    outf("// *** Not to be hand edited (changes will be lost on re-generation) ***\n\n"); 
+    outf("// *** Not to be hand edited (changes will be lost on re-generation) ***\n\n");
     outf("#include \"%s.hpp\"\n\n",packagename);
     ModuleInfo * mi;
-    for (mi=modules;mi;mi=mi->next) 
+    for (mi=modules;mi;mi=mi->next)
     {
-        if (isSCM) {
-            mi->write_clarion_scm_stub_class();
-        }
-        else {
+        if (!isSCM)
+        {
             mi->write_body_class();
-            mi->write_clarion_interface_class();
         }
     }
-    outs("//end\n"); // CR for Clarion
-}
-
-
-
-void HIDLcompiler::write_clarion_esp_interfaces()
-{
-    gOutfile = clwo;
-    
-    EspMessageInfo * mi;
-    for (mi=msgs;mi;mi=mi->next) 
-    {
-        mi->write_clarion_include_interface();
-        outs("\n\n");
-    }
-    
-    EspServInfo *si;
-    for (si=servs;si;si=si->next) 
-    {
-        si->write_clarion_include_interface();
-        outs("\n\n");
-    }
-    
-}
-
-
-void HIDLcompiler::write_clarion_HRPC_interfaces()
-{
-    gOutfile = clwo;
-    
-    if (isSCM)
-        outs("! Clarion SCM Interfaces\n");
-    else 
-    {
-        // outs("! Clarion HRPC Interfaces\n");
-        outs("*** No longer generated\n");
-        return;
-    }
-    
-    outf("! Include file generated by " HIDL " Version %s from %s.%s\n", HIDLVER, packagename, srcFileExt);
-    outs("! *** Not to be hand edited (changes will be lost on re-generation) ***\n\n");
-    outf("  OMIT('EndOfInclude',_%s_I_)\n",packagename);
-    outf("_%s_I_ EQUATE(1)\n\n",packagename);
-    
-    if (isSCM) 
-    {
-        outs("  INCLUDE('SCM.INT'),ONCE\n\n");
-        if (clarion.length()) 
-        {
-            outs(clarion.str());
-            outs("\n\n");
-        }
-    }
-    else
-        outs("  INCLUDE('HRPC.INC'),ONCE\n\n");
-    
-    EnumInfo * ei;
-    for (ei=enums;ei;ei=ei->next) 
-    {
-        ei->write_clarion_enum();
-    }
-    
-    ModuleInfo * mi;
-    for (mi=modules;mi;mi=mi->next) 
-    {
-        mi->write_clarion_include_module();
-    }
-    
-    if (isESP)
-    {
-        write_clarion_esp_interfaces();
-    }
-    
-    
-    outs("\n");
-    outs("  MAP\n");
-    outf("    MODULE('%s')\n",packagename);
-    
-    if (!isSCM) 
-    {
-        for (mi=modules;mi;mi=mi->next) 
-        {
-            outf("      HRPC_Make_%s(HRPCI_Clarion_Transport transport),*HRPCI_%s,PASCAL,NAME('_HRPC_Make_%s@4')\n",mi->name,mi->name,mi->name);
-        }
-    }
-    else
-    {
-        ApiInfo * fi;
-        for (fi=apis;fi;fi=fi->next) 
-        {
-            fi->write_clarion_include_method();
-        }
-    }
-    
-    outs("    END\n\n");
-    outs("  END\n\n");
-    outf("\nEndOfInclude\n");
 }
 
 void HIDLcompiler::write_example_implementation_module()
@@ -7250,7 +6719,7 @@ void HIDLcompiler::write_example_implementation_module()
     gOutfile = xsvo;
     outs("// Example Server Implementation Template\n");
     outf("// Source file generated by " HIDL " Version %s from %s.%s\n", HIDLVER, packagename, srcFileExt);
-    outs("// *** You should copy this file before changing, as it will be overwritten next time " HIDL " is run ***\n\n"); 
+    outs("// *** You should copy this file before changing, as it will be overwritten next time " HIDL " is run ***\n\n");
     outs("#include <stddef.h>\n");
     outs("#include <stdlib.h>\n");
     outs("#include <assert.h>\n\n");
@@ -7262,7 +6731,7 @@ void HIDLcompiler::write_example_implementation_module()
         mi->write_define();
     }
     outf("#include \"%s.cpp\"\n\n",packagename);
-    for (mi=modules;mi;mi=mi->next) 
+    for (mi=modules;mi;mi=mi->next)
     {
         mi->write_example_module();
     }
@@ -7272,10 +6741,10 @@ void HIDLcompiler::write_header_class_intro()
 {
     gOutfile=ho;
     outf("// *** Include file generated by " HIDL " Version %s from %s.%s ***\n", HIDLVER, packagename, srcFileExt);
-    outf("// *** Not to be hand edited (changes will be lost on re-generation) ***\n\n"); 
+    outf("// *** Not to be hand edited (changes will be lost on re-generation) ***\n\n");
     outf("#ifndef %s_%s_INCL\n",packagename,isSCM?"SCM":"HID");
     outf("#define %s_%s_INCL\n\n",packagename,isSCM?"SCM":"HID");
-    
+
     if (isESP)
     {
         outf("#include \"esp.hpp\"\n\n");
@@ -7292,14 +6761,13 @@ void HIDLcompiler::write_header_class_outro()
 {
     outs("\n");
     EspMessageInfo * mi;
-    for (mi=msgs;mi;mi=mi->next) 
+    for (mi=msgs;mi;mi=mi->next)
     {
         mi->write_factory_decl();
     }
     outs("\n");
-    
+
     outf("#endif // _%s_%s_INCL\n", packagename,isSCM?"SCM":"HID");
-    outs("//end\n"); // CR for Clarion
 }
 
 //-------------------------------------------------------------------------------------------------------------
@@ -7318,15 +6786,6 @@ void EnumInfo::write_header_enum()
     outs("};\n\n");
 }
 
-void EnumInfo::write_clarion_enum()
-{
-    outf("%s EQUATE(UNSIGNED)\n", xlat(name));
-    outf("  ITEMIZE,PRE(%s)\n",xlat(name));
-    for (EnumValInfo *vi=vals;vi;vi=vi->next) {
-        outf("%s\tEQUATE(%d)\n",xlat(vi->name),vi->val);
-    }
-    outs("\tEND\n\n");
-}
 
 // end
 //-------------------------------------------------------------------------------------------------------------

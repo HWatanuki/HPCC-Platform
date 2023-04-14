@@ -56,9 +56,7 @@
 
 // Have not yet tested impact of new IBYTI handling in non-containerized systems
 
-#ifdef _CONTAINERIZED
 #define NEW_IBYTI
-#endif
 
 #if defined(_CONTAINERIZED) || defined (NEW_IBYTI)
 // Both containerized mode and new IBYTI mode assume subchannels are passed in header.
@@ -249,6 +247,9 @@ interface ISerializedRoxieQueryPacket : extends IInterface
     virtual unsigned getTraceLength() const = 0;
     virtual IRoxieQueryPacket *deserialize() const = 0;
     virtual ISerializedRoxieQueryPacket *cloneSerializedPacket(unsigned channel) const = 0;
+    virtual unsigned __int64 queryIBYTIDelayTime() const = 0;
+    virtual unsigned __int64 queryEnqueuedTimeStamp() const = 0;
+    virtual void noteQueued(unsigned __int64 IBYTIdelayNs) = 0;
 };
 
 interface IRoxieQueryPacket : extends IInterface
@@ -267,6 +268,11 @@ interface IRoxieQueryPacket : extends IInterface
     virtual IRoxieQueryPacket *insertSkipData(size32_t skipDataLen, const void *skipData) const = 0;
 
     virtual ISerializedRoxieQueryPacket *serialize() const = 0;
+
+    virtual void noteTimeSent() = 0;
+    virtual void setAcknowledged() = 0;
+    virtual bool isAcknowledged() const = 0;
+    virtual bool resendNeeded(unsigned timeout, unsigned now) const = 0;
 };
 
 interface IQueryDll;
@@ -300,6 +306,7 @@ extern IPropertyTree *topology;
 extern MapStringTo<int> *preferredClusters;
 extern StringArray allQuerySetNames;
 
+extern bool acknowledgeAllRequests;
 extern bool alwaysTrustFormatCrcs;
 extern bool allFilesDynamic;
 extern bool lockSuperFiles;
@@ -346,7 +353,6 @@ extern unsigned preabortIndexReadsThreshold;
 extern bool traceStartStop;
 extern bool traceActivityCharacteristics;
 extern unsigned actResetLogPeriod;
-extern bool traceRoxiePackets;
 extern bool delaySubchannelPackets;
 extern bool traceTranslations;
 extern bool defaultTimeActivities;
@@ -363,6 +369,7 @@ extern StringBuffer fileNameServiceDali;
 extern StringBuffer roxieName;
 #ifdef _CONTAINERIZED
 extern StringBuffer defaultPlane;
+extern StringBuffer defaultIndexBuildPlane;
 #endif
 extern bool trapTooManyActiveQueries;
 extern unsigned maxEmptyLoopIterations;
@@ -381,6 +388,7 @@ extern unsigned parallelQueryLoadThreads;
 extern bool adhocRoxie;
 extern bool alwaysFailOnLeaks;
 extern bool ignoreFileDateMismatches;
+extern bool ignoreFileSizeMismatches;
 extern int fileTimeFuzzySeconds;
 extern SinkMode defaultSinkMode;
 
@@ -622,8 +630,17 @@ public:
         writer.outputEndArray("Log");
     };
 
-    virtual void CTXLOGa(TracingCategory category, const char *prefix, const char *text) const
+    virtual void CTXLOGva(const LogMsgCategory & cat, const LogMsgJobInfo & job, LogMsgCode code, const char *format, va_list args) const override  __attribute__((format(printf,5,0))) 
     {
+        StringBuffer text, prefix;
+        getLogPrefix(prefix);
+        text.valist_appendf(format, args);
+        CTXLOGa(LOG_TRACING, cat, job, code, prefix.str(), text.str());
+    }
+
+    virtual void CTXLOGa(TracingCategory category, const LogMsgCategory & cat, const LogMsgJobInfo & job, LogMsgCode code, const char *prefix, const char *text) const override
+    {
+        LogContextScope ls(nullptr);
         if (category == LOG_TRACING)
             DBGLOG("[%s] %s", prefix, text);
         else
@@ -636,6 +653,7 @@ public:
     }
     virtual void CTXLOGaeva(IException *E, const char *file, unsigned line, const char *prefix, const char *format, va_list args) const  __attribute__((format(printf,6,0)))
     {
+        LogContextScope ls(nullptr);
         StringBuffer text;
         text.append("ERROR");
         if (E)

@@ -86,6 +86,11 @@
 # endif
 #endif
 
+// OSX seems to use TCP_KEEPALIVE instead of TCP_KEEPIDLE
+#if defined(__APPLE__) && !defined(TCP_KEEPIDLE)
+# define TCP_KEEPIDLE TCP_KEEPALIVE
+#endif
+
 // various options 
 
 #define CONNECT_TIMEOUT_REFUSED_WAIT    1000        // maximum to sleep on connect_timeout
@@ -368,6 +373,88 @@ enum SOCKETMODE { sm_tcp_server, sm_tcp, sm_udp_server, sm_udp, sm_multicast_ser
 # endif
 #endif
 
+static CriticalSection queryKACS;
+
+enum UseKA { UNINIT, DISABLED, ENABLED };
+static std::atomic<UseKA> doKeepAlive { UNINIT };
+static int keepAliveTime = -1;
+static int keepAliveInterval = -1;
+static int keepAliveProbes = -1;
+
+/*
+<Software>
+  <Globals>
+    <keepalive time="200" interval="75" probes="9"/>
+  </Globals>
+
+global:
+  expert:
+    keepalive:
+      time: 200
+      interval: 75
+      probes: 9
+*/
+
+extern jlib_decl bool queryKeepAlive(int &time, int &intvl, int &probes)
+{
+    UseKA state = doKeepAlive.load();
+    if (state == UNINIT)
+    {
+        CriticalBlock block(queryKACS);
+        state = doKeepAlive.load();
+        if (state == UNINIT)
+        {
+#ifdef _CONTAINERIZED
+            Owned<IPropertyTree> expert;
+#else
+            Owned<IPropertyTree> envtree;
+            IPropertyTree *expert = nullptr;
+#endif
+            try
+            {
+#ifdef _CONTAINERIZED
+                expert.setown(getGlobalConfigSP()->getPropTree("expert"));
+#else
+                // MCK - without this many components will not have a global prop
+                envtree.setown(getHPCCEnvironment());
+                if (envtree)
+                    expert = envtree->queryPropTree("Software/Globals");
+#endif
+            }
+            catch (IException *e)
+            {
+                e->Release();
+            }
+            catch (...)
+            {
+            }
+            state = DISABLED;
+            if (expert)
+            {
+                IPropertyTree *keepalive = expert->queryPropTree("keepalive");
+                if (keepalive)
+                {
+                    keepAliveTime = keepalive->getPropInt("@time", keepAliveTime);
+                    keepAliveInterval = keepalive->getPropInt("@interval", keepAliveInterval);
+                    keepAliveProbes = keepalive->getPropInt("@probes", keepAliveProbes);
+                    state = ENABLED;
+                }
+            }
+            doKeepAlive = state;
+        }
+    }
+
+    if (state == ENABLED)
+    {
+        time = keepAliveTime;
+        intvl = keepAliveInterval;
+        probes = keepAliveProbes;
+        return true;
+    }
+    else
+        return false;
+}
+
 class CSocket: public ISocket, public CInterface
 {
 public:
@@ -505,6 +592,10 @@ private:
         else
             return 0;
     }
+
+    void checkCfgKeepAlive();
+    void setKeepAlive(bool set, int time, int intval, int probes);
+
 };
 
 CriticalSection CSocket::crit;
@@ -542,8 +633,6 @@ public:
 
 bool win_socket_library::initdone = false;
 static win_socket_library ws32_lib;
-
-#define ERRNO() WSAGetLastError()
 
 #define JSE_ADDRINUSE WSAEADDRINUSE
 #define JSE_CONNRESET WSAECONNRESET
@@ -692,7 +781,6 @@ typedef union {
 
 
 #define JSE_INTR EINTR
-#define ERRNO() (errno)
 #ifndef INADDR_NONE
 #define INADDR_NONE (-1)
 #endif
@@ -857,7 +945,7 @@ size32_t CSocket::avail_read()
     if (ioctl(sock, FIONREAD, &avail)==0) 
 #endif
         return (size32_t)avail;
-    int err = ERRNO();
+    int err = SOCKETERRNO();
     LOGERR2(err,1,"avail_read");
     return 0;
 }
@@ -884,15 +972,18 @@ int CSocket::pre_connect (bool block)
     owned = true;
     state = ss_pre_open;            // will be set to open by post_connect
     if (sock == INVALID_SOCKET) {
-        int err = ERRNO();
+        int err = SOCKETERRNO();
         THROWJSOCKEXCEPTION(err);
     }
+
+    checkCfgKeepAlive();
+
     STATS.activesockets++;
     int err = 0;
     set_nonblock(!block);
     int rc = ::connect(sock, &u.sa, ul);
     if (rc==SOCKET_ERROR) {
-        err = ERRNO();
+        err = SOCKETERRNO();
         if ((err != JSE_INPROGRESS)&&(err != JSE_WOULDBLOCK)&&(err != JSE_TIMEDOUT)&&(err!=JSE_CONNREFUSED)) {   // handled by caller
             if (err != JSE_NETUNREACH) {
                 pre_conn_unreach_cnt.store(0);
@@ -921,7 +1012,7 @@ int CSocket::post_connect ()
     socklen_t  errlen = sizeof(err);
     int rc = getsockopt(sock, SOL_SOCKET, SO_ERROR, (char *)&err, &errlen); // check for error
     if ((rc!=0)&&!err)
-        err = ERRNO();  // some implementations of getsockopt duff
+        err = SOCKETERRNO();  // some implementations of getsockopt duff
     if (err==0) {
         nagling = true;
         set_nagle(false);
@@ -947,8 +1038,11 @@ void CSocket::open(int listen_queue_size,bool reuseports)
     else
         sock = ::socket(AF_INET, connectionless()?SOCK_DGRAM:SOCK_STREAM, 0);
     if (sock == INVALID_SOCKET) {
-        THROWJSOCKEXCEPTION(ERRNO());
+        THROWJSOCKEXCEPTION(SOCKETERRNO());
     }
+
+    checkCfgKeepAlive();
+
     STATS.activesockets++;
 
 #ifdef SOCKTRACE
@@ -985,7 +1079,7 @@ void CSocket::open(int listen_queue_size,bool reuseports)
         ul = setSockAddrAny(u,hostport);
     int saverr;
     if (::bind(sock, &u.sa, ul) != 0) {
-        saverr = ERRNO();
+        saverr = SOCKETERRNO();
         if (saverr==JSE_ADDRINUSE) {   // don't log as error (some usages probe ports)
 ErrPortInUse:
             closesock();
@@ -1001,7 +1095,7 @@ ErrPortInUse:
     }
     if (!connectionless() && listen_queue_size) {
         if (::listen(sock, listen_queue_size) != 0) {
-            saverr = ERRNO();
+            saverr = SOCKETERRNO();
             if (saverr==JSE_ADDRINUSE)
                 goto ErrPortInUse;
             closesock();
@@ -1010,7 +1104,7 @@ ErrPortInUse:
     }
     if (mcastreq) {
         if (setsockopt(sock, IPPROTO_IP, IP_ADD_MEMBERSHIP,(char*)mcastreq, sizeof(*mcastreq))!=0) {
-            saverr = ERRNO();
+            saverr = SOCKETERRNO();
             closesock();
             THROWJSOCKEXCEPTION(saverr);
         }
@@ -1062,7 +1156,7 @@ ISocket* CSocket::accept(bool allowcancel, SocketEndpoint *peerEp)
             }
         }
         int saverr;
-        saverr = ERRNO();
+        saverr = SOCKETERRNO();
         if ((sock==INVALID_SOCKET)||(accept_cancel_state==accept_cancel_pending)) {
             accept_cancel_state = accept_cancelled;
             if (allowcancel)
@@ -1101,12 +1195,56 @@ void CSocket::set_linger(int lingertime)
     }
 }
 
-void CSocket::set_keep_alive(bool set)
+void CSocket::setKeepAlive(bool set, int time, int intvl, int probes)
 {
     int on=set?1:0;
-    if (setsockopt(sock, SOL_SOCKET, SO_KEEPALIVE, (char*)&on, sizeof(on)) != 0) {
-        IWARNLOG("KeepAlive not set");
+    if (setsockopt(sock, SOL_SOCKET, SO_KEEPALIVE, (char*)&on, sizeof(on)) != 0)
+    {
+        OWARNLOG("KeepAlive not set");
+        return;
     }
+
+    if (!on)
+        return;
+
+    int srtn, optval;
+    socklen_t optlen = sizeof(optval);
+
+    if (time >= 0)
+    {
+        optval = time;
+        srtn = setsockopt(sock, IPPROTO_TCP, TCP_KEEPIDLE, (char *)&optval, optlen);
+        if (srtn != 0)
+            OWARNLOG("KeepAlive time not set");
+    }
+
+    if (intvl >= 0)
+    {
+        optval = intvl;
+        srtn = setsockopt(sock, IPPROTO_TCP, TCP_KEEPINTVL, (char *)&optval, optlen);
+        if (srtn != 0)
+            OWARNLOG("KeepAlive probes not set");
+    }
+
+    if (probes >= 0)
+    {
+        optval = probes;
+        srtn = setsockopt(sock, IPPROTO_TCP, TCP_KEEPCNT, (char *)&optval, optlen);
+        if (srtn != 0)
+            OWARNLOG("KeepAlive probes not set");
+    }
+}
+
+void CSocket::checkCfgKeepAlive()
+{
+    int time, intvl, probes;
+    if (queryKeepAlive(time, intvl, probes))
+        setKeepAlive(true, time, intvl, probes);
+}
+
+void CSocket::set_keep_alive(bool set)
+{
+    setKeepAlive(set, -1, -1, -1);
 }
 
 
@@ -1172,7 +1310,7 @@ SocketEndpoint &CSocket::getPeerEndpoint(SocketEndpoint &ep)
         DEFINE_SOCKADDR(u);
         socklen_t ul = sizeof(u);       
         if (::getpeername(sock,&u.sa, &ul)<0) {         
-            DBGLOG("getpeername failed %d",ERRNO());
+            DBGLOG("getpeername failed %d",SOCKETERRNO());
             ep.set(NULL, 0);
         }
         else
@@ -1207,7 +1345,7 @@ SocketEndpoint &CSocket::getEndpoint(SocketEndpoint &ep) const
     DEFINE_SOCKADDR(u);
     socklen_t ul = sizeof(u);
     if (::getsockname(sock,&u.sa, &ul)<0) {
-        THROWJSOCKEXCEPTION(ERRNO());
+        THROWJSOCKEXCEPTION(SOCKETERRNO());
     }
     getSockAddrEndpoint(u,ul,ep);
     return ep;
@@ -1316,13 +1454,13 @@ bool CSocket::connect_timeout( unsigned timeout, bool noexception)
                 socklen_t errlen = sizeof(err);
                 rc = getsockopt(sock, SOL_SOCKET, SO_ERROR, (char *)&err, &errlen); // check for error
                 if ((rc!=0)&&!err) 
-                    err = ERRNO();  // some implementations of getsockopt duff
+                    err = SOCKETERRNO();  // some implementations of getsockopt duff
                 if (err) //  probably ECONNREFUSED but treat all errors same
                     refused_sleep(tm,refuseddelay);
             }
             else if (rc<0)
             {
-                err = ERRNO();
+                err = SOCKETERRNO();
                 if (err != JSE_INTR)
                 {
                     LOGERR2(err,2,"::select/poll");
@@ -1454,14 +1592,14 @@ void CSocket::connect_wait(unsigned timems)
                     socklen_t errlen = sizeof(err);
                     rc = getsockopt(sock, SOL_SOCKET, SO_ERROR, (char *)&err, &errlen); // check for error
                     if ((rc!=0)&&!err)
-                        err = ERRNO();  // some implementations of getsockopt duff
+                        err = SOCKETERRNO();  // some implementations of getsockopt duff
                     if (err)
                         refused_sleep(tm,refuseddelay); //  probably ECONNREFUSED but treat all errors same
                     break;
                 }
                 if (rc<0)
                 {
-                    err = ERRNO();
+                    err = SOCKETERRNO();
                     if (err != JSE_INTR)
                     {
                         LOGERR2(err,2,"::select/poll");
@@ -1571,7 +1709,7 @@ void CSocket::udpconnect()
 #endif
     STATS.activesockets++;
     if (sock == INVALID_SOCKET) {
-        THROWJSOCKEXCEPTION(ERRNO());
+        THROWJSOCKEXCEPTION(SOCKETERRNO());
     }
     int res = ::connect(sock, &u.sa, ul);
     if (res != 0) { // works for UDP
@@ -1600,7 +1738,7 @@ int CSocket::logPollError(unsigned revents, const char *rwstr)
         socklen_t serrlen = sizeof(serror);
         int srtn = getsockopt(sock, SOL_SOCKET, SO_ERROR, (char *)&serror, &serrlen);
         if (srtn != 0)
-            serror = ERRNO();
+            serror = SOCKETERRNO();
         LOGERR2(serror,2,errStr.str());
         retcode = serror;
     }
@@ -1648,7 +1786,7 @@ int CSocket::wait_read(unsigned timeout)
 #endif
         if (ret == SOCKET_ERROR)
         {   // error
-            int err = ERRNO();
+            int err = SOCKETERRNO();
             if (err!=JSE_INTR)
             {   // else retry (should adjust time but for our usage don't think it matters that much)
                 LOGERR2(err,1,"wait_read");
@@ -1720,7 +1858,7 @@ int CSocket::wait_write(unsigned timeout)
 #endif
         if (ret==SOCKET_ERROR)
         {
-            int err = ERRNO();
+            int err = SOCKETERRNO();
             if (err!=JSE_INTR)
             {   // else retry (should adjust time but for our usage don't think it matters that much)
                 LOGERR2(err,1,"wait_write");
@@ -1787,7 +1925,7 @@ void CSocket::readtms(void* buf, size32_t min_size, size32_t max_size, size32_t 
     do {
         int rc = wait_read(timeleft);
         if (rc < 0) {
-            THROWJSOCKEXCEPTION(ERRNO());
+            THROWJSOCKEXCEPTION(SOCKETERRNO());
         }
         if (rc == 0) {
             THROWJSOCKEXCEPTION(JSOCKERR_timeout_expired);
@@ -1809,7 +1947,7 @@ EintrRetry:
             rc = recv(sock, (char*)buf + size_read, max_size - size_read, 0);
         }
         if (rc < 0) {
-            int err = ERRNO();
+            int err = SOCKETERRNO();
             if (BADSOCKERR(err)) {
                 // don't think this should happen but convert to same as shutdown while investigation
                 LOGERR2(err,1,"Socket closed during read");
@@ -1868,7 +2006,7 @@ void CSocket::read(void* buf, size32_t min_size, size32_t max_size, size32_t &si
         if (timeoutsecs != WAIT_FOREVER) {
             rc = wait_read(timeleft*1000);
             if (rc < 0) {
-                THROWJSOCKEXCEPTION(ERRNO());
+                THROWJSOCKEXCEPTION(SOCKETERRNO());
             }
             if (rc == 0) {
                 THROWJSOCKEXCEPTION(JSOCKERR_timeout_expired);
@@ -1891,7 +2029,7 @@ EintrRetry:
             rc = recv(sock, (char*)buf + size_read, max_size - size_read, 0);
         }
         if (rc < 0) {
-            int err = ERRNO();
+            int err = SOCKETERRNO();
             if (BADSOCKERR(err)) {
                 // don't think this should happen but convert to same as shutdown while investigation
                 LOGERR2(err,3,"Socket closed during read");
@@ -1951,7 +2089,7 @@ EintrRetry:
             rc = recv(sock, (char*)buf, size, 0);
         }
         if (rc < 0) {
-            int err = ERRNO();
+            int err = SOCKETERRNO();
             if (BADSOCKERR(err)) {
                 // don't think this should happen but convert to same as shutdown while investigation
                 LOGERR2(err,5,"Socket closed during read");
@@ -2016,7 +2154,7 @@ EintrRetry:
             rc = send(sock, (char*)buf, size, SEND_FLAGS);
         }
         if (rc < 0) {
-            int err=ERRNO();
+            int err=SOCKETERRNO();
             if (BADSOCKERR(err)) {
                 LOGERR2(err,7,"Socket closed during write");
                 rc = 0;
@@ -2145,7 +2283,7 @@ EintrRecv:
         return false;
     else if (rc < 0)
     {
-        int err=ERRNO();
+        int err=SOCKETERRNO();
         if ((err==JSE_INTR)&&(retrycount--!=0))
         {
             LOGERR2(err,7,"recv EINTR retrying");
@@ -2172,7 +2310,7 @@ size32_t CSocket::udp_write_to(const SocketEndpoint &ep, void const* buf, size32
         socklen_t  ul = setSockAddr(u,ep,ep.port);      
         int rc = sendto(sock, (char*)buf, size, 0, &u.sa, ul);
         if (rc < 0) {
-            int err=ERRNO();
+            int err=SOCKETERRNO();
             if (((sockmode==sm_multicast)||(sockmode==sm_udp))&&(err==JSE_CONNREFUSED))
                 break; // ignore
             if (err!=JSE_INTR) {
@@ -2218,7 +2356,7 @@ size32_t CSocket::write_multiple(unsigned num,const void **buf, size32_t *size)
 EintrRetry:
     DWORD sent;
     if (WSASendTo(sock,bufs,num,&sent,0,NULL,0,NULL,NULL)==SOCKET_ERROR) {
-        int err=ERRNO();
+        int err=SOCKETERRNO();
         if (BADSOCKERR(err)) {
             LOGERR2(err,8,"Socket closed during write");
             sent = 0;
@@ -2512,7 +2650,7 @@ void CSocket::shutdown(unsigned mode)
 #endif
         int rc = ::shutdown(sock, mode);
         if (rc != 0) {
-            int err=ERRNO();
+            int err=SOCKETERRNO();
             if (err==JSE_NOTCONN) {
 #ifdef _TRACELINKCLOSED
                 DBGLOG("CSocket::shutdown(%d) failed, socket: %d", mode, sock);
@@ -2572,7 +2710,7 @@ void CSocket::close()
         if (mcastreq)
             setsockopt(sock, IPPROTO_IP, IP_DROP_MEMBERSHIP,(char*)mcastreq,sizeof(*mcastreq));
         if (closesock() != 0) {
-            THROWJSOCKEXCEPTION(ERRNO());
+            THROWJSOCKEXCEPTION(SOCKETERRNO());
         }
     }
 }
@@ -2602,12 +2740,12 @@ size32_t CSocket::get_send_buffer_size()
 void CSocket::set_send_buffer_size(size32_t maxsend)
 {
     if (setsockopt(sock, SOL_SOCKET, SO_SNDBUF, (char *)&maxsend, sizeof(maxsend))!=0) {
-        LOGERR2(ERRNO(),1,"setsockopt(SO_SNDBUF)");
+        LOGERR2(SOCKETERRNO(),1,"setsockopt(SO_SNDBUF)");
     }
 #ifdef CHECKBUFSIZE
     size32_t v;
     if (getsockopt(sock, SOL_SOCKET, SO_SNDBUF, (char *)&v, sizeof(v))!=0) {
-        LOGERR2(ERRNO(),1,"getsockopt(SO_SNDBUF)");
+        LOGERR2(SOCKETERRNO(),1,"getsockopt(SO_SNDBUF)");
     }
     if (v!=maxsend) 
         IWARNLOG("set_send_buffer_size requested %d, got %d",maxsend,v);
@@ -2627,12 +2765,12 @@ size32_t CSocket::get_receive_buffer_size()
 void CSocket::set_receive_buffer_size(size32_t max)
 {
     if (setsockopt(sock, SOL_SOCKET, SO_RCVBUF, (char *)&max, sizeof(max))!=0) {
-        LOGERR2(ERRNO(),1,"setsockopt(SO_RCVBUF)");
+        LOGERR2(SOCKETERRNO(),1,"setsockopt(SO_RCVBUF)");
     }
 #ifdef CHECKBUFSIZE
     size32_t v;
     if (getsockopt(sock, SOL_SOCKET, SO_RCVBUF, (char *)&v, sizeof(v))!=0) {
-        LOGERR2(ERRNO(),1,"getsockopt(SO_RCVBUF)");
+        LOGERR2(SOCKETERRNO(),1,"getsockopt(SO_RCVBUF)");
     }
     if (v<max) 
         IWARNLOG("set_receive_buffer_size requested %d, got %d",max,v);
@@ -3251,7 +3389,7 @@ static bool decodeNumericIP(const char *text,unsigned *netaddr)
         int ret = _inet_pton(AF_INET6, text, netaddr);
         if (ret>=0)
             return (ret>0);
-        int err = ERRNO();
+        int err = SOCKETERRNO();
         StringBuffer tmp("_inet_pton: ");
         tmp.append(text);
         LOGERR(err,1,tmp.str());
@@ -4044,7 +4182,7 @@ public:
         CriticalBlock block(sect);
         char c = 0;
         if(write(dummysock[1], &c, 1) != 1) {
-            int err = ERRNO();
+            int err = SOCKETERRNO();
             LOGERR(err,1,"Socket closed during trigger select");
         }
 #else
@@ -4080,7 +4218,7 @@ public:
         if (getsockopt(sock, SOL_SOCKET, SO_TYPE, (char *)&t, &tl)!=0) {
             StringBuffer sockstr;
             const char *tracename = sockstr.append((unsigned)sock).str();
-            LOGERR2(ERRNO(),1,"CSocketBaseThread select handle");
+            LOGERR2(SOCKETERRNO(),1,"CSocketBaseThread select handle");
             return false;
         }
 #ifdef _USE_SELECT
@@ -4096,7 +4234,7 @@ public:
         if (rc<0) {
             StringBuffer sockstr;
             const char *tracename = sockstr.append((unsigned)sock).str();
-            LOGERR2(ERRNO(),2,"CSocketBaseThread select handle");
+            LOGERR2(SOCKETERRNO(),2,"CSocketBaseThread select handle");
             return false;
         }
 # ifdef _DEBUG
@@ -4111,7 +4249,7 @@ public:
         if (rc<0) {
             StringBuffer sockstr;
             const char *tracename = sockstr.append((unsigned)sock).str();
-            LOGERR2(ERRNO(),3,"CSocketBaseThread select handle");
+            LOGERR2(SOCKETERRNO(),3,"CSocketBaseThread select handle");
             return false;
         }
 # ifdef _DEBUG
@@ -4137,13 +4275,13 @@ public:
         }
         else
         {
-            int err = ERRNO();
+            int err = SOCKETERRNO();
             if (err == JSE_INTR)
                 return true; // assume ok until next time called
         }
         StringBuffer sockstr;
         const char *tracename = sockstr.append((unsigned)sock).str();
-        LOGERR2(ERRNO(),3,"CSocketBaseThread poll handle");
+        LOGERR2(SOCKETERRNO(),3,"CSocketBaseThread poll handle");
         return false;
 #endif
     }
@@ -4161,7 +4299,7 @@ class CSocketSelectThread: public CSocketBaseThread
         if (!dummysockopen) { 
 #ifdef _USE_PIPE_FOR_SELECT_TRIGGER
             if(pipe(dummysock)) {
-                IWARNLOG("CSocketSelectThread: create pipe failed %d",ERRNO());
+                IWARNLOG("CSocketSelectThread: create pipe failed %d",SOCKETERRNO());
                 return;
             }
             for (unsigned i=0;i<2;i++) {
@@ -4550,7 +4688,7 @@ public:
                 if (n < 0)
                 {
                     CriticalBlock block(sect);
-                    int err = ERRNO();
+                    int err = SOCKETERRNO();
                     if (err != JSE_INTR)
                     {
                         if (dummysockopen)
@@ -4815,7 +4953,7 @@ class CSocketEpollThread: public CSocketBaseThread
         srtn = ::epoll_ctl(efd, op, fd, &event);
         // if another thread closed fd before here don't fail
         if ( (srtn < 0) && (op != EPOLL_CTL_DEL) ){
-            int err = ERRNO();
+            int err = SOCKETERRNO();
             IWARNLOG("epoll_ctl failed op:%d, fd:%d, err=%d", op, fd, err);
         }
     }
@@ -4833,7 +4971,7 @@ class CSocketEpollThread: public CSocketBaseThread
 #ifdef _USE_PIPE_FOR_SELECT_TRIGGER
             if(pipe(dummysock))
             {
-                IWARNLOG("CSocketEpollThread: create pipe failed %d",ERRNO());
+                IWARNLOG("CSocketEpollThread: create pipe failed %d",SOCKETERRNO());
                 return;
             }
             for (unsigned i=0;i<2;i++)
@@ -4931,7 +5069,7 @@ public:
         epfd = ::epoll_create(1); // NB: arg is not used in newer kernels
         if (epfd < 0)
         {
-            int err = ERRNO();
+            int err = SOCKETERRNO();
             LOGERR(err,1,"epoll_create()");
             THROWJSOCKEXCEPTION2(err);
         }
@@ -4952,7 +5090,7 @@ public:
         }
         catch (const std::bad_alloc &e)
         {
-            int err = ERRNO();
+            int err = SOCKETERRNO();
             LOGERR(err,1,"epevents alloc()");
             THROWJSOCKEXCEPTION2(err);
         }
@@ -5143,7 +5281,7 @@ public:
                 int err = 0;
                 int n = ::epoll_wait(epfd, epevents, 1, 1000);
                 if (n < 0)
-                    err = ERRNO();
+                    err = SOCKETERRNO();
 
 # ifdef EPOLLTRACE
                 if(n > 0)
@@ -6749,13 +6887,13 @@ public:
                     socklen_t errlen = sizeof(err);
                     rc = getsockopt(s, SOL_SOCKET, SO_ERROR, (char *)&err, &errlen); // check for error
                     if ((rc!=0)&&!err) 
-                        err = ERRNO();  // some implementations of getsockopt duff
+                        err = SOCKETERRNO();  // some implementations of getsockopt duff
                     if (err&&!oneshot) //  probably ECONNREFUSED but treat all errors same
                         refused_sleep((waitremaining==remaining)?waittm:connecttm,refuseddelay); // this stops becoming cpu bound
                 }
                 else
                 {   // select/poll failed
-                    err = ERRNO();
+                    err = SOCKETERRNO();
                     if (err != JSE_INTR)
                     {
                         LOGERR(err,2,"CSocketConnectWait ::select/poll");
@@ -6833,7 +6971,7 @@ int wait_multiple(bool isRead,               //IN   true if wait read, false it 
     }
     catch (const std::bad_alloc &e)
     {
-        int err = ERRNO();
+        int err = SOCKETERRNO();
         throw MakeStringException(-1,"wait_multiple::fds malloc failure %d", err);
     }
     for (aindex_t idx = 0; idx < numSocks; idx++)
@@ -6896,7 +7034,7 @@ int wait_multiple(bool isRead,               //IN   true if wait read, false it 
     else if (res == SOCKET_ERROR)
     {
         res = 0; // dont return negative on failure
-        int err = ERRNO();
+        int err = SOCKETERRNO();
         if (err != JSE_INTR)
         {
 #ifndef _USE_SELECT

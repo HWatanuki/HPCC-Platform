@@ -232,13 +232,13 @@ public:
     {
         return ctx->collectingDetailedStatistics();
     }
-    virtual void CTXLOGva(const char *format, va_list args) const __attribute__((format(printf,2,0)))
+    virtual void CTXLOGva(const LogMsgCategory & cat, const LogMsgJobInfo & job, LogMsgCode code, const char *format, va_list args) const override  __attribute__((format(printf,5,0))) 
     {
-        ctx->CTXLOGva(format, args);
+        ctx->CTXLOGva(cat, job, code, format, args);
     }
-    virtual void CTXLOGa(TracingCategory category, const char *prefix, const char *text) const
+    virtual void CTXLOGa(TracingCategory category, const LogMsgCategory & cat, const LogMsgJobInfo & job, LogMsgCode code, const char *prefix, const char *text) const override
     {
-        ctx->CTXLOGa(category, prefix, text);
+        ctx->CTXLOGa(category, cat, job, code, prefix, text);
     }
     virtual void logOperatorExceptionVA(IException *E, const char *file, unsigned line, const char *format, va_list args) const __attribute__((format(printf,5,0)))
     {
@@ -406,20 +406,26 @@ static const StatisticsMapping keyedJoinStatistics({ StNumServerCacheHits, StNum
                                                     StNumBlobCacheHits, StNumLeafCacheHits, StNumNodeCacheHits,
                                                     StNumBlobCacheAdds, StNumLeafCacheAdds, StNumNodeCacheAdds,
                                                     StTimeBlobLoad, StCycleBlobLoadCycles, StTimeLeafLoad, StCycleLeafLoadCycles, StTimeNodeLoad, StCycleNodeLoadCycles,
-                                                    StNumDiskRejected, StSizeAgentReply, StTimeAgentWait}, joinStatistics);
+                                                    StCycleBlobReadCycles, StCycleLeafReadCycles, StCycleNodeReadCycles, StTimeBlobRead, StTimeLeafRead, StTimeNodeRead,
+                                                    StCycleBlobFetchCycles, StCycleLeafFetchCycles, StCycleNodeFetchCycles, StTimeBlobFetch, StTimeLeafFetch, StTimeNodeFetch,
+                                                    StNumNodeDiskFetches, StNumLeafDiskFetches, StNumBlobDiskFetches,
+                                                    StNumDiskRejected, StSizeAgentReply, StTimeAgentWait, StTimeAgentQueue, StTimeIBYTIDelay }, joinStatistics);
 static const StatisticsMapping indexStatistics({StNumServerCacheHits, StNumIndexSeeks, StNumIndexScans, StNumIndexWildSeeks,
                                                 StNumIndexSkips, StNumIndexNullSkips, StNumIndexMerges, StNumIndexMergeCompares,
                                                 StNumPreFiltered, StNumPostFiltered, StNumIndexAccepted, StNumIndexRejected,
                                                 StNumBlobCacheHits, StNumLeafCacheHits, StNumNodeCacheHits,
                                                 StNumBlobCacheAdds, StNumLeafCacheAdds, StNumNodeCacheAdds,
                                                 StTimeBlobLoad, StCycleBlobLoadCycles, StTimeLeafLoad, StCycleLeafLoadCycles, StTimeNodeLoad, StCycleNodeLoadCycles,
-                                                StNumIndexRowsRead, StSizeAgentReply, StTimeAgentWait}, actStatistics);
+                                                StCycleBlobReadCycles, StCycleLeafReadCycles, StCycleNodeReadCycles, StTimeBlobRead, StTimeLeafRead, StTimeNodeRead,
+                                                StCycleBlobFetchCycles, StCycleLeafFetchCycles, StCycleNodeFetchCycles, StTimeBlobFetch, StTimeLeafFetch, StTimeNodeFetch,
+                                                StNumNodeDiskFetches, StNumLeafDiskFetches, StNumBlobDiskFetches,
+                                                StNumIndexRowsRead, StSizeAgentReply, StTimeAgentWait, StTimeAgentQueue, StTimeIBYTIDelay }, actStatistics);
 static const StatisticsMapping diskStatistics({StNumServerCacheHits, StNumDiskRowsRead, StNumDiskSeeks, StNumDiskAccepted,
-                                               StNumDiskRejected, StSizeAgentReply, StTimeAgentWait }, actStatistics);
+                                               StNumDiskRejected, StSizeAgentReply, StTimeAgentWait, StTimeAgentQueue, StTimeIBYTIDelay }, actStatistics);
 static const StatisticsMapping soapStatistics({ StTimeSoapcall }, actStatistics);
 static const StatisticsMapping groupStatistics({ StNumGroups, StNumGroupMax }, actStatistics);
 static const StatisticsMapping sortStatistics({ StTimeSortElapsed }, actStatistics);
-static const StatisticsMapping indexWriteStatistics({ StNumDuplicateKeys }, actStatistics);
+static const StatisticsMapping indexWriteStatistics({ StNumDuplicateKeys, StNumLeafCacheAdds, StNumNodeCacheAdds, StNumBlobCacheAdds }, actStatistics);
 
 // These ones get accumulated and reported in COMPLETE: line (and workunit).
 // Excludes ones that are not sensible to sum across activities, other than StTimeTotalExecute which must be explicitly overwritten at global level before we report it
@@ -435,11 +441,15 @@ extern const StatisticsMapping accumulatedStatistics({StWhenFirstRow, StTimeLoca
                                                       StNumBlobCacheHits, StNumLeafCacheHits, StNumNodeCacheHits,
                                                       StNumBlobCacheAdds, StNumLeafCacheAdds, StNumNodeCacheAdds,
                                                       StTimeBlobLoad, StCycleBlobLoadCycles, StTimeLeafLoad, StCycleLeafLoadCycles, StTimeNodeLoad, StCycleNodeLoadCycles,  // If time and cycles are not included they are not serialized from agents
+                                                      StCycleBlobReadCycles, StCycleLeafReadCycles, StCycleNodeReadCycles, StTimeBlobRead, StTimeLeafRead, StTimeNodeRead,
+                                                      StCycleBlobFetchCycles, StCycleLeafFetchCycles, StCycleNodeFetchCycles, StTimeBlobFetch, StTimeLeafFetch, StTimeNodeFetch,
+                                                      StNumNodeDiskFetches, StNumLeafDiskFetches, StNumBlobDiskFetches,
                                                       StNumDiskRejected, StSizeAgentReply, StTimeAgentWait,
                                                       StTimeSoapcall,
                                                       StNumGroups,
                                                       StTimeSortElapsed,
-                                                      StNumDuplicateKeys});
+                                                      StNumDuplicateKeys,
+                                                      StTimeAgentQueue, StTimeIBYTIDelay });
 
 //=================================================================================
 
@@ -1238,12 +1248,15 @@ public:
     }
 
     // MORE - most of this is copied from ccd.hpp - can't we refactor?
-    virtual void CTXLOGa(TracingCategory category, const char *prefix, const char *text) const
+    virtual void CTXLOGa(TracingCategory category, const LogMsgCategory & cat, const LogMsgJobInfo & job, LogMsgCode code, const char *prefix, const char *text) const override
     {
         if (ctx)
-            ctx->CTXLOGa(category, prefix, text);
+            ctx->CTXLOGa(category, cat, job, code, prefix, text);
         else
-            DBGLOG("[%s] %s", prefix, text);
+        {
+            LogContextScope ls(nullptr);
+            LOG(cat, job, code, "[%s] %s", prefix, text);
+        }
     }
 
     virtual void CTXLOGaeva(IException *E, const char *file, unsigned line, const char *prefix, const char *format, va_list args) const __attribute__((format(printf,6,0)))
@@ -1252,6 +1265,7 @@ public:
             ctx->CTXLOGaeva(E, file, line, prefix, format, args);
         else
         {
+            LogContextScope ls(nullptr);
             StringBuffer ss;
             ss.appendf("[%s] ERROR", prefix);
             if (E)
@@ -4057,10 +4071,20 @@ class CRemoteResultAdaptor : implements IEngineRowStream, implements IFinalRoxie
         }
     }
 
-    void retryPending()
+    void retryPending(unsigned timeout)
     {
-        CriticalBlock b(pendingCrit);
         checkDelayed();
+        unsigned now = 0;
+        if (timeout)
+        {
+            if (doTrace(traceRoxiePackets))
+                DBGLOG("Checking %d pending packets for ack status", pending.ordinality());
+            now = msTick();
+            if (now-lastRetryCheck < timeout/4)
+                return;
+            lastRetryCheck = now;
+        }
+        CriticalBlock b(pendingCrit);
         ForEachItemIn(idx, pending)
         {
             IRoxieServerQueryPacket &p = pending.item(idx);
@@ -4069,6 +4093,12 @@ class CRemoteResultAdaptor : implements IEngineRowStream, implements IFinalRoxie
                 IRoxieQueryPacket *i = p.queryPacket();
                 if (i)
                 {
+                    if (timeout)
+                    {
+                        if (!i->resendNeeded(timeout, now))
+                            continue;
+                        activity.queryLogCtx().CTXLOG("Input has not been acknowledged for %u ms - retry required?", timeout);
+                    }
                     if (!i->queryHeader().retry())
                     {
                         StringBuffer s;
@@ -4249,6 +4279,8 @@ public:
     cycle_t unpackerWaitCycles;
     bool timeActivities;
 
+    unsigned lastRetryCheck = 0;
+
 //private:   //vc6 doesn't like this being private yet accessed by nested class...
     const void *getRow(IMessageUnpackCursor *mu) 
     {
@@ -4380,6 +4412,7 @@ public:
         bufferStream.setown(createMemoryBufferSerialStream(tempRowBuffer));
         rowSource.setStream(bufferStream);
         timeActivities = defaultTimeActivities;
+        lastRetryCheck = msTick();
     }
 
     ~CRemoteResultAdaptor()
@@ -4903,6 +4936,10 @@ public:
         {
             checkDelayed();
             activity.queryContext()->checkAbort();
+            if (acknowledgeAllRequests && !localAgent)
+            {
+                retryPending(checkInterval);
+            }
             bool anyActivity;
             if (ctxTraceLevel > 5)
                 activity.queryLogCtx().CTXLOG("Calling getNextUnpacker(%d)", checkInterval);
@@ -5087,19 +5124,12 @@ public:
                                         buf.read(idx);
                                         buf.read(childProcessed);
                                         buf.read(childStrands);
-                                        if (traceLevel > 5)
-                                            activity.queryLogCtx().CTXLOG("Processing ChildCount %d idx %d strands %d for child %d subgraph %d", childProcessed, idx, childStrands, childId, graphId);
                                         //activity.queryContext()->noteProcessed(graphId, childId, idx, childProcessed, childStrands);
                                     }
                                     else
                                     {
                                         CRuntimeStatisticCollection childStats(allStatistics);
                                         childStats.deserialize(buf);
-                                        if (traceLevel > 5)
-                                        {
-                                            StringBuffer s;
-                                            activity.queryLogCtx().CTXLOG("Processing ChildStats for child %d subgraph %d: %s", childId, graphId, childStats.toStr(s).str());
-                                        }
                                         //activity.queryContext()->mergeActivityStats(childStats, graphId, childId);
                                         activity.mergeStats(childStats);
                                     }
@@ -5129,11 +5159,12 @@ public:
                         break;
 
                     case ROXIE_ALIVE:
-                        if (ctxTraceLevel > 4)
+                        if (doTrace(traceRoxiePackets))
                         {
                             StringBuffer s;
                             activity.queryLogCtx().CTXLOG("ROXIE_ALIVE: %s", header.toString(s).str());
                         }
+                        op->setAcknowledged();
                         op->queryHeader().noteAlive(header.retries & ROXIE_RETRIES_MASK);
                         // Leave it on pending queue in original location
                         break;
@@ -5201,14 +5232,14 @@ public:
                     }
                 }
             }
-            else
+            else if (!anyActivity && !localAgent && !acknowledgeAllRequests)
             {
                 unsigned timeNow = msTick();
-                if (!anyActivity && !localAgent && (timeNow-lastActivity >= timeout))
+                if (timeNow-lastActivity >= checkInterval)
                 {
                     lastActivity = timeNow;
-                    activity.queryLogCtx().CTXLOG("Input has stalled for %u ms - retry required?", timeout);
-                    retryPending();
+                    activity.queryLogCtx().CTXLOG("Input has stalled for %u ms - retry required?", checkInterval);
+                    retryPending(0);
                 }
             }
         }
@@ -11783,8 +11814,8 @@ public:
                         processed++;
                         if (processed==rowLimit)
                         {
-                            if (traceLevel > 4)
-                                DBGLOG("activityid = %d  line = %d", activityId, __LINE__);
+                            if (doTrace(traceLimitExceeded, TraceFlags::Detailed))
+                                CTXLOG("onLimitExceeded line = %d", __LINE__);
                             helper.onLimitExceeded();
                         }
                         return rowBuilder.finalizeRowClear(outSize);
@@ -11800,8 +11831,8 @@ public:
                 processed++;
                 if (processed==rowLimit)
                 {
-                    if (traceLevel > 4)
-                        DBGLOG("activityid = %d  line = %d", activityId, __LINE__);
+                    if (doTrace(traceLimitExceeded, TraceFlags::Detailed))
+                        CTXLOG("onLimitExceeded line = %d", __LINE__);
                     ReleaseClearRoxieRow(ret);
                     helper.onLimitExceeded(); // should not return
                     throwUnexpected();
@@ -12395,6 +12426,13 @@ class CRoxieServerIndexWriteActivity : public CRoxieServerInternalSinkActivity, 
     StringBuffer filename;
     unsigned __int64 duplicateKeyCount = 0;
     unsigned __int64 cummulativeDuplicateKeyCount = 0;
+    unsigned __int64 numLeafNodes = 0;
+    unsigned __int64 numBlobNodes = 0;
+    unsigned __int64 numBranchNodes = 0;
+    offset_t offsetBranches = 0;
+    offset_t uncompressedSize = 0;
+    offset_t originalBlobSize = 0;
+    unsigned nodeSize = 0;
 
     void updateWorkUnitResult()
     {
@@ -12460,35 +12498,6 @@ class CRoxieServerIndexWriteActivity : public CRoxieServerInternalSinkActivity, 
             }
             else
                 throw MakeStringException(99, "Cannot write index file %s, file already exists (missing OVERWRITE attribute?)", filename.str());
-        }
-    }
-
-    void buildUserMetadata(Owned<IPropertyTree> & metadata)
-    {
-        size32_t nameLen;
-        char * nameBuff;
-        size32_t valueLen;
-        char * valueBuff;
-        unsigned idx = 0;
-        while(helper.getIndexMeta(nameLen, nameBuff, valueLen, valueBuff, idx++))
-        {
-            StringBuffer name(nameLen, nameBuff);
-            StringBuffer value(valueLen, valueBuff);
-            rtlFree(nameBuff);
-            rtlFree(valueBuff);
-            if(*name == '_' && !checkReservedMetadataName(name))
-            {
-                OwnedRoxieString fname(helper.getFileName());
-                throw MakeStringException(0, "Invalid name %s in user metadata for index %s (names beginning with underscore are reserved)", name.str(), fname.get());
-            }
-            if(!validateXMLTag(name.str()))
-            {
-                OwnedRoxieString fname(helper.getFileName());
-                throw MakeStringException(0, "Invalid name %s in user metadata for index %s (not legal XML element name)", name.str(), fname.get());
-            }
-            if(!metadata)
-                metadata.setown(createPTree("metadata", ipt_fast));
-            metadata->setProp(name.str(), value.str());
         }
     }
 
@@ -12565,9 +12574,9 @@ public:
             if (isVariable)
                 flags |= HTREE_VARSIZE;
             Owned<IPropertyTree> metadata;
-            buildUserMetadata(metadata);
+            buildUserMetadata(metadata, helper);
             buildLayoutMetadata(metadata);
-            unsigned nodeSize = metadata->getPropInt("_nodeSize", NODESIZE);
+            nodeSize = metadata->getPropInt("_nodeSize", NODESIZE);
             if (metadata->getPropBool("_noSeek", ctx->queryOptions().noSeekBuildIndex))
             {
                 flags |= TRAILING_HEADER_ONLY;
@@ -12579,19 +12588,32 @@ public:
             if (!needsSeek)
                 out.setown(createNoSeekIOStream(out));
 
-            Owned<IKeyBuilder> builder = createKeyBuilder(out, flags, maxDiskRecordSize, nodeSize, helper.getKeyedSize(), 0, &helper, true, false);
+            StringBuffer defaultIndexCompression;
+            IRoxieServerContext * serverContext = ctx->queryServerContext();
+            if (serverContext)
+            {
+                IConstWorkUnit *workunit = serverContext->queryWorkUnit();
+                if (workunit)
+                    workunit->getDebugValue("defaultIndexCompression", StringBufferAdaptor(defaultIndexCompression));
+            }
+
+            Owned<IKeyBuilder> builder = createKeyBuilder(out, flags, maxDiskRecordSize, nodeSize, helper.getKeyedSize(), 0, &helper, defaultIndexCompression, true, false);
             class BcWrapper : implements IBlobCreator
             {
                 IKeyBuilder *builder;
+                offset_t totalSize = 0;
             public:
                 BcWrapper(IKeyBuilder *_builder) : builder(_builder) {}
                 virtual unsigned __int64 createBlob(size32_t size, const void * ptr)
                 {
+                    totalSize += size;
                     return builder->createBlob(size, (const char *) ptr);
                 }
+                offset_t queryTotalSize() const { return totalSize; }
             } bc(builder);
 
             // Loop thru the results
+            size32_t maxRecordSizeSeen = 0;
             for (;;)
             {
                 OwnedConstRoxieRow nextrec(inputStream->ungroupedNextRow());
@@ -12603,6 +12625,9 @@ public:
                     RtlStaticRowBuilder rowBuilder(rowBuffer, maxDiskRecordSize);
                     size32_t thisSize = helper.transform(rowBuilder, nextrec, &bc, fpos);
                     builder->processKeyData(rowBuffer, fpos, thisSize);
+                    uncompressedSize += (thisSize + sizeof(offset_t)); // Fileposition is always stored.....
+                    if (thisSize > maxRecordSizeSeen)
+                        maxRecordSizeSeen = thisSize;
                 }
                 catch(IException * e)
                 {
@@ -12612,7 +12637,16 @@ public:
             }
             duplicateKeyCount = builder->getDuplicateCount();
             cummulativeDuplicateKeyCount += duplicateKeyCount;
-            builder->finish(metadata, &fileCrc);
+            builder->finish(metadata, &fileCrc, maxRecordSizeSeen);
+            numLeafNodes = builder->getNumLeafNodes();
+            numBranchNodes = builder->getNumBranchNodes();
+            numBlobNodes = builder->getNumBlobNodes();
+            offsetBranches = builder->getOffsetBranches();
+            originalBlobSize = bc.queryTotalSize();
+
+            noteStatistic(StNumLeafCacheAdds, numLeafNodes);
+            noteStatistic(StNumNodeCacheAdds, numBranchNodes);
+            noteStatistic(StNumBlobCacheAdds, numBlobNodes);
             clearKeyStoreCache(false);
         }
     }
@@ -12640,6 +12674,13 @@ public:
     virtual void reset()
     {
         CRoxieServerActivity::reset();
+        duplicateKeyCount = 0;
+        numLeafNodes = 0;
+        numBlobNodes = 0;
+        numBranchNodes = 0;
+        offsetBranches = 0;
+        uncompressedSize = 0;
+        originalBlobSize = 0;
         noteStatistic(StNumDuplicateKeys, cummulativeDuplicateKeyCount);
         writer.clear();
     }
@@ -12650,7 +12691,7 @@ public:
     {
         // Now publish to name services
         StringBuffer dir, base;
-        offset_t indexFileSize = writer->queryFile()->size();
+        offset_t compressedFileSize = writer->queryFile()->size();
         if(clusterHandler)
             clusterHandler->getDirAndFilename(dir, base);
 
@@ -12660,8 +12701,10 @@ public:
             attrs.setown(createPTree("Part", ipt_fast));  // clusterHandler is going to set attributes
         else
             attrs.set(&desc->queryPart(0)->queryProperties());
-        attrs->setPropInt64("@size", indexFileSize);
+        attrs->setPropInt64("@uncompressedSize", uncompressedSize + originalBlobSize);
+        attrs->setPropInt64("@size", compressedFileSize);
         attrs->setPropInt64("@recordCount", reccount);
+        attrs->setPropInt64("@offsetBranches", offsetBranches);
 
         CDateTime createTime, modifiedTime, accessedTime;
         writer->queryFile()->getTime(&createTime, &modifiedTime, &accessedTime);
@@ -12680,9 +12723,22 @@ public:
         // properties of the logical file
         IPropertyTree & properties = desc->queryProperties();
         properties.setProp("@kind", "key");
-        properties.setPropInt64("@size", indexFileSize);
+        properties.setPropInt64("@uncompressedSize", uncompressedSize + originalBlobSize);
+        properties.setPropInt64("@size", compressedFileSize);
         properties.setPropInt64("@recordCount", reccount);
         properties.setPropInt64("@duplicateKeyCount", duplicateKeyCount);
+        properties.setPropInt64("@numLeafNodes", numLeafNodes);
+        properties.setPropInt64("@numBranchNodes", numBranchNodes);
+        properties.setPropInt64("@numBlobNodes", numBlobNodes);
+        if (numBlobNodes)
+            properties.setPropInt64("@originalBlobSize", originalBlobSize);
+
+        size32_t keyedSize = helper.getKeyedSize();
+        if (keyedSize == (size32_t)-1)
+            keyedSize = helper.queryDiskRecordSize()->getFixedSize();
+        properties.setPropInt64("@keyedSize", keyedSize);
+        properties.setPropInt("@nodeSize", nodeSize);
+
         WorkunitUpdate workUnit = ctx->updateWorkUnit();
         if (workUnit)
         {
@@ -17897,8 +17953,8 @@ public:
 
     virtual void onLimitExceeded(bool isKeyed)
     {
-        if (traceLevel > 4)
-            DBGLOG("activityid = %d  isKeyed = %d  line = %d", activityId, isKeyed, __LINE__);
+        if (doTrace(traceLimitExceeded, TraceFlags::Detailed))
+            CTXLOG("onLimitExceeded isKeyed = %d  line = %d", isKeyed, __LINE__);
         helper.onLimitExceeded();
     }
 
@@ -20230,8 +20286,8 @@ public:
             if (processed > rowLimit)
             {
                 ReleaseRoxieRow(ret);
-                if (traceLevel > 4)
-                    DBGLOG("activityid = %d  line = %d", activityId, __LINE__);
+                if (doTrace(traceLimitExceeded, TraceFlags::Detailed))
+                    CTXLOG("onLimitExceeded line = %d", __LINE__);
                 helper.onLimitExceeded();
             }
         }
@@ -20248,8 +20304,8 @@ public:
             if (processed > rowLimit)
             {
                 ReleaseRoxieRow(ret);
-                if (traceLevel > 4)
-                    DBGLOG("activityid = %d  line = %d", activityId, __LINE__);
+                if (doTrace(traceLimitExceeded, TraceFlags::Detailed))
+                    CTXLOG("onLimitExceeded line = %d", __LINE__);
                 helper.onLimitExceeded();
             }
         }
@@ -22375,8 +22431,8 @@ public:
 
     virtual void onLimitExceeded(bool isKeyed)
     {
-        if (traceLevel > 4)
-            DBGLOG("activityid = %d  isKeyed = %d  line = %d", activityId, isKeyed, __LINE__);
+        if (doTrace(traceLimitExceeded, TraceFlags::Detailed))
+            CTXLOG("onLimitExceeded isKeyed = %d  line = %d", isKeyed, __LINE__);
         assertex(compoundHelper);
         if (isKeyed) // MORE does this exist for diskread? should it?
         {
@@ -22530,8 +22586,8 @@ public:
                 processed++;
                 if (processed > rowLimit)
                 {
-                    if (traceLevel > 4)
-                        DBGLOG("activityid = %d line = %d", activityId, __LINE__);
+                    if (doTrace(traceLimitExceeded, TraceFlags::Detailed))
+                        CTXLOG("onLimitExceeded line = %d", __LINE__);
                     ReleaseRoxieRow(ret);
                     compoundHelper->onLimitExceeded();
                     throwUnexpected(); // onLimitExceeded is not supposed to return
@@ -22686,8 +22742,8 @@ public:
                         OwnedConstRoxieRow ret = rowBuilder.finalizeRowClear(sizeGot); 
                         if (processed > rowLimit)
                         {
-                            if (traceLevel > 4)
-                                DBGLOG("activityid = %d  line = %d", activityId, __LINE__);
+                            if (doTrace(traceLimitExceeded, TraceFlags::Detailed))
+                                CTXLOG("onLimitExceeded line = %d", __LINE__);
                             readHelper->onLimitExceeded();
                             throwUnexpected(); // onLimitExceeded is not supposed to return
                         }
@@ -23501,8 +23557,8 @@ public:
                                         unsigned __int64 count = countKey->checkCount(keyedLimit);
                                         if (count > keyedLimit)
                                         {
-                                            if (traceLevel > 4)
-                                                DBGLOG("activityid = %d  line = %d", activityId, __LINE__);
+                                            if (doTrace(traceLimitExceeded, TraceFlags::Detailed))
+                                                CTXLOG("onLimitExceeded line = %d", __LINE__);
                                             onLimitExceeded(true);
                                         }
                                     }
@@ -23535,7 +23591,7 @@ public:
                             {
                                 //block for TransformCallbackAssociation
                                 {
-                                    TransformCallbackAssociation associate(callback, tlk);
+                                    TransformCallbackAssociation associate(callback, tlk, this);
                                     if (thisKey->isTopLevelKey())
                                     {
                                         if (thisKey->isFullySorted())
@@ -23797,7 +23853,7 @@ public:
         }
         virtual const void *getNext(int length)
         {
-            TransformCallbackAssociation associate(owner.callback, tlk);
+            TransformCallbackAssociation associate(owner.callback, tlk, &owner);
             while (tlk->lookup(true))
             {
                 keyedCount++;
@@ -23867,8 +23923,8 @@ public:
 
     virtual void onLimitExceeded(bool isKeyed)
     {
-        if (traceLevel > 4)
-            DBGLOG("activityid = %d  isKeyed = %d  line = %d", activityId, isKeyed, __LINE__);
+        if (doTrace(traceLimitExceeded, TraceFlags::Detailed))
+            CTXLOG("onLimitExceeded isKeyed = %d  line = %d", isKeyed, __LINE__);
         if (isKeyed)
         {
             if (indexHelper.getFlags() & (TIRkeyedlimitskips|TIRkeyedlimitcreates))
@@ -24090,7 +24146,7 @@ class CRoxieServerSimpleIndexReadActivity : public CRoxieServerActivity, impleme
 
     void onEOF()
     {
-        callback.setManager(NULL);
+        callback.setManager(nullptr, nullptr);
         eof = true;
         tlk.clear();
     }
@@ -24264,7 +24320,7 @@ public:
                     ctx->queryProbeManager()->setNodeProperty(this, "filter", out.str());
             }
             tlk->reset();
-            callback.setManager(tlk);
+            callback.setManager(tlk, this);
 
             keyedLimit = indexHelper.getKeyedLimit();
             if (keyedLimit != (unsigned __int64) -1)
@@ -24374,8 +24430,8 @@ public:
                         {
                             throwUnexpected(); // should not have used simple variant if maySkip set...
                         }
-                        if (traceLevel > 4)
-                            DBGLOG("activityid = %d  line = %d", activityId, __LINE__);
+                        if (doTrace(traceLimitExceeded, TraceFlags::Detailed))
+                            CTXLOG("onLimitExceeded line = %d", __LINE__);
                         indexHelper.onLimitExceeded();
                         break;
                     }
@@ -24580,8 +24636,8 @@ public:
 
     virtual void onLimitExceeded(bool isKeyed)
     {
-        if (traceLevel > 4)
-            DBGLOG("activityid = %d  isKeyed = %d  line = %d", activityId, isKeyed, __LINE__);
+        if (doTrace(traceLimitExceeded, TraceFlags::Detailed))
+            CTXLOG("onLimitExceeded isKeyed = %d  line = %d", isKeyed, __LINE__);
         if (isKeyed)
         {
             if (indexHelper.getFlags() & (TIRkeyedlimitskips|TIRkeyedlimitcreates))
@@ -24816,8 +24872,8 @@ public:
 
     virtual void onLimitExceeded(bool isKeyed)
     {
-        if (traceLevel > 4)
-            DBGLOG("activityid = %d  isKeyed = %d  line = %d", activityId, isKeyed, __LINE__);
+        if (doTrace(traceLimitExceeded, TraceFlags::Detailed))
+            CTXLOG("onLimitExceeded isKeyed = %d line = %d", isKeyed, __LINE__);
         throwUnexpected();
     }
 
@@ -24995,8 +25051,8 @@ public:
 
     virtual void onLimitExceeded(bool isKeyed)
     {
-        if (traceLevel > 4)
-            DBGLOG("activityid = %d  isKeyed = %d  line = %d", activityId, isKeyed, __LINE__);
+        if (doTrace(traceLimitExceeded, TraceFlags::Detailed))
+            CTXLOG("onLimitExceeded isKeyed = %d  line = %d", isKeyed, __LINE__);
         throwUnexpected();
     }
 
@@ -25098,8 +25154,8 @@ public:
             keyedCount++;
             if (keyedCount > keyedLimit)
             {
-                if (traceLevel > 4)
-                    DBGLOG("activityid = %d  line = %d", activityId, __LINE__);
+                if (doTrace(traceLimitExceeded, TraceFlags::Detailed))
+                    CTXLOG("onLimitExceeded line = %d", __LINE__);
                 onLimitExceeded(true); 
                 break;
             }
@@ -25142,8 +25198,8 @@ public:
 
     virtual void onLimitExceeded(bool isKeyed)
     {
-        if (traceLevel > 4)
-            DBGLOG("activityid = %d  isKeyed = %d  line = %d", activityId, isKeyed, __LINE__);
+        if (doTrace(traceLimitExceeded, TraceFlags::Detailed))
+            CTXLOG("onLimitExceeded isKeyed = %d  line = %d", isKeyed, __LINE__);
         if (isKeyed)
         {
             if (indexHelper.getFlags() & (TIRkeyedlimitskips|TIRkeyedlimitcreates))
@@ -25350,8 +25406,8 @@ public:
 
     virtual void onLimitExceeded(bool isKeyed)
     {
-        if (traceLevel > 4)
-            DBGLOG("activityid = %d  isKeyed = %d  line = %d", activityId, isKeyed, __LINE__);
+        if (doTrace(traceLimitExceeded, TraceFlags::Detailed))
+            DBGLOG("onLimitExceeded isKeyed = %d  line = %d", isKeyed, __LINE__);
         if (isKeyed)
             throwUnexpected();
         helper.onLimitExceeded();
@@ -26112,7 +26168,7 @@ public:
                                 {
                                     candidateCount++;
                                     indexRecordsRead++;
-                                    KLBlobProviderAdapter adapter(tlk);
+                                    KLBlobProviderAdapter adapter(tlk, this);
                                     const byte *indexRow = tlk->queryKeyBuffer();
                                     size_t fposOffset = tlk->queryRowSize() - sizeof(offset_t);
                                     offset_t fpos = rtlReadBigUInt8(indexRow + fposOffset);
@@ -26194,8 +26250,8 @@ public:
 
     virtual void onLimitExceeded(bool isKeyed)
     {
-        if (traceLevel > 4)
-            DBGLOG("activityid = %d  isKeyed = %d  line = %d", activityId, isKeyed, __LINE__);
+        if (doTrace(traceLimitExceeded, TraceFlags::Detailed))
+            CTXLOG("onLimitExceeded isKeyed = %d  line = %d", isKeyed, __LINE__);
         if (isKeyed)
             throwUnexpected();
         helper.onLimitExceeded();
@@ -26634,8 +26690,8 @@ public:
 
     virtual void onLimitExceeded(bool isKeyed)
     {
-        if (traceLevel > 4)
-            DBGLOG("activityid = %d  isKeyed = %d  line = %d", activityId, isKeyed, __LINE__);
+        if (doTrace(traceLimitExceeded, TraceFlags::Detailed))
+            CTXLOG("isKeyed = %d  line = %d", isKeyed, __LINE__);
         if (isKeyed)
             throwUnexpected();
         helper.onLimitExceeded();
@@ -26964,7 +27020,7 @@ public:
                                 {
                                     candidateCount++;
                                     indexRecordsRead++;
-                                    KLBlobProviderAdapter adapter(tlk);
+                                    KLBlobProviderAdapter adapter(tlk, this);
                                     const byte *indexRow = tlk->queryKeyBuffer();
                                     size_t fposOffset = tlk->queryRowSize() - sizeof(offset_t);
                                     offset_t fpos = rtlReadBigUInt8(indexRow + fposOffset);
@@ -26973,7 +27029,7 @@ public:
                                         RtlDynamicRowBuilder rb(joinFieldsAllocator, true); 
                                         CPrefixedRowBuilder pb(KEYEDJOIN_RECORD_SIZE(0), rb);
                                         accepted++;
-                                        KLBlobProviderAdapter adapter(tlk);
+                                        KLBlobProviderAdapter adapter(tlk, this);
                                         helper.extractJoinFields(pb, indexRow, &adapter);
                                         KeyedJoinHeader *rec = (KeyedJoinHeader *) rb.getUnfinalizedClear(); // lack of finalize ok as unserialized data here.
                                         rec->fpos = fpos;

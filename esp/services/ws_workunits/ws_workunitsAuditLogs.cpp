@@ -454,31 +454,24 @@ bool readECLWUCurrentJob(const char* curjob, const char* clusterName, const char
         return false;
 
     // action name
-    char action[256];
     bptr = eptr + 1;
     eptr = strchr(bptr, ',');
     if(!eptr)
         return false;
 
-    int len = eptr - bptr;
-    strncpy(action, bptr, len);
-    action[len] = 0;
+    StringBuffer action;
+    action.append(eptr - bptr, bptr);
 
     // cluster name
-    char cluster[256];
     bptr = eptr + 1;
     eptr = strchr(bptr, ',');
     if(!eptr)
         return false;
 
-    len = eptr - bptr;
-    strncpy(cluster, bptr, len);
-    cluster[len] = 0;
-
-    if (cluster && *cluster)
+    if (eptr > bptr)
     {
-        clusterStr.clear().append(cluster);
-        if (clusterName && *clusterName && stricmp(cluster, clusterName))
+        clusterStr.clear().append(eptr - bptr, bptr);
+        if (!isEmptyString(clusterName) && !strieq(clusterStr, clusterName))
             return false;
     }
 
@@ -502,6 +495,10 @@ bool readECLWUCurrentJob(const char* curjob, const char* clusterName, const char
     if(!eptr)
         return false;
 
+    //The graph number in the job string may be in 2 formats:
+    //a number (for example: 2) or with the 'graph' in front of the number (for example: group2).
+    //Skip the 'graph' if it is in front of the number.
+    int len = eptr - bptr;
     if (bptr[0] == 'g' && len > 5)
         bptr += 5;
 
@@ -1403,8 +1400,24 @@ void CWsWorkunitsSoapBindingEx::createAndDownloadWUZAPFile(IEspContext& context,
     ensureWsWorkunitAccess(context, *cwu, SecAccess_Read);
 
     request->getParameter("URL", zapInfoReq.url);
-    request->getParameter("ESPIPAddress", zapInfoReq.espIP);
-    request->getParameter("ThorIPAddress", zapInfoReq.thorIP);
+    double version = context.getClientVersion();
+    if (version >= 1.95)
+    {
+        request->getParameter("ESPApplication", zapInfoReq.esp);
+        if (zapInfoReq.esp.isEmpty())
+            zapInfoReq.esp.set(espApplicationName.get());
+        request->getParameter("ThorProcesses", zapInfoReq.thor);
+    }
+    else
+    {
+        request->getParameter("ESPIPAddress", zapInfoReq.esp);
+        if (zapInfoReq.esp.isEmpty())
+        {
+            IpAddress ipaddr = queryHostIP();
+            ipaddr.getIpText(zapInfoReq.esp);
+        }
+        request->getParameter("ThorIPAddress", zapInfoReq.thor);
+    }
     request->getParameter("ProblemDescription", zapInfoReq.problemDesc);
     request->getParameter("WhatChanged", zapInfoReq.whatChanged);
     request->getParameter("WhereSlow", zapInfoReq.whereSlow);
@@ -1434,7 +1447,6 @@ void CWsWorkunitsSoapBindingEx::createAndDownloadWUZAPFile(IEspContext& context,
             zapInfoReq.emailFrom.set(wswService->zapEmailFrom.str());
     }
 
-    double version = context.getClientVersion();
     if (version >= 1.70)
         request->getParameter("ZAPPassword", zapInfoReq.password);
     else
@@ -1507,6 +1519,9 @@ int CWsWorkunitsSoapBindingEx::onGet(CHttpRequest* request, CHttpResponse* respo
     IEspContext *ctx = request->queryContext();
     IProperties *params = request->queryParameters();
 
+    double defaultClientVersion = 0.0;
+    if ((ctx->getClientVersion() <= 0) && getDefaultClientVersion(defaultClientVersion))
+        ctx->setClientVersion(defaultClientVersion);
 
     try
     {
@@ -1547,9 +1562,6 @@ int CWsWorkunitsSoapBindingEx::onGet(CHttpRequest* request, CHttpResponse* respo
             SecAccessFlags accessOwn;
             SecAccessFlags accessOthers;
             getUserWuAccessFlags(*ctx, accessOwn, accessOthers, true);
-
-            if (ctx->getClientVersion()<=0)
-                ctx->setClientVersion(1.51);
 
             const char *cluster = params->queryProp("Cluster");
             const char *startDate = params->queryProp("StartDate");
@@ -1664,7 +1676,6 @@ int CWsWorkunitsSoapBindingEx::onGetInstantQuery(IEspContext &context, CHttpRequ
             return 0;
         }
     }
-
     return CWsWorkunitsSoapBinding::onGetInstantQuery(context, request, response, service, method);
 }
 

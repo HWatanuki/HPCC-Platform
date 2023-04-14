@@ -1,5 +1,5 @@
 import * as React from "react";
-import { Checkbox, ChoiceGroup, IChoiceGroupOption, Dropdown as DropdownBase, IDropdownOption, TextField, Link, ProgressIndicator } from "@fluentui/react";
+import { Checkbox, ChoiceGroup, ComboBox, IChoiceGroupOption, Dropdown as DropdownBase, IDropdownOption, TextField, Link, ProgressIndicator, IComboBoxOption, IComboBoxProps } from "@fluentui/react";
 import { scopedLogger } from "@hpcc-js/util";
 import { TpDropZoneQuery, TpGroupQuery, TpServiceQuery } from "src/WsTopology";
 import * as WsAccess from "src/ws_access";
@@ -104,23 +104,40 @@ const AsyncDropdown: React.FunctionComponent<AsyncDropdownProps> = ({
         }
         return [];
     }, [options, required]);
-
     const [selectedItem, setSelectedItem] = React.useState<IDropdownOption>();
-    React.useEffect(() => {
-        setSelectedItem(selOptions?.find(row => row.key === selectedKey) ?? selOptions[0]);
-    }, [selectedKey, selOptions]);
+    const [selectedIdx, setSelectedIdx] = React.useState<number>();
 
-    const controlledChange = React.useCallback((event: React.FormEvent<HTMLDivElement>, item: IDropdownOption, idx: number): void => {
-        setSelectedItem(item);
-        onChange(event, item, idx);
-    }, [onChange]);
+    React.useEffect(() => {
+        let item;
+        if (selectedItem?.key) {
+            item = selOptions?.find(row => row.key === selectedItem?.key) ?? selOptions[0];
+        } else {
+            item = selOptions?.find(row => row.key === selectedKey) ?? selOptions[0];
+        }
+        if (!item) return;
+        if (item.key === selectedKey) {
+            // do nothing, unless
+            if (!selectedItem) {
+                setSelectedItem(item);
+                setSelectedIdx(selOptions.indexOf(item));
+            }
+        } else {
+            setSelectedItem(item);
+            setSelectedIdx(selOptions.indexOf(item));
+        }
+    }, [selectedKey, selOptions, selectedItem]);
+
+    React.useEffect(() => {
+        if (!selectedItem || selectedItem?.key === selectedKey) return;
+        if (selectedItem !== undefined) {
+            onChange(undefined, selectedItem, selectedIdx);
+        }
+    }, [onChange, selectedItem, selectedIdx, selectedKey]);
 
     return options === undefined ?
         <DropdownBase label={label} options={[]} placeholder={nlsHPCC.loadingMessage} disabled={true} /> :
-        <DropdownBase label={label} options={selOptions} selectedKey={selectedItem?.key} onChange={controlledChange} placeholder={placeholder} disabled={disabled} required={required} errorMessage={errorMessage} className={className} />;
+        <DropdownBase label={label} options={selOptions} selectedKey={selectedItem?.key} onChange={(_, item: IDropdownOption) => setSelectedItem(item)} placeholder={placeholder} disabled={disabled} required={required} errorMessage={errorMessage} className={className} />;
 };
-
-const autoSelectDropdown = (selectedKey?: string, required?: boolean) => selectedKey === undefined && !required;
 
 export type FieldType = "string" | "password" | "number" | "checkbox" | "choicegroup" | "datetime" | "dropdown" | "link" | "links" | "progress" |
     "workunit-state" |
@@ -148,6 +165,7 @@ interface StringField extends BaseField {
     value?: string;
     readonly?: boolean;
     multiline?: boolean;
+    errorMessage?: string;
 }
 
 interface NumericField extends BaseField {
@@ -305,37 +323,38 @@ type Field = StringField | NumericField | CheckboxField | ChoiceGroupField | Dat
 export type Fields = { [id: string]: Field };
 
 export interface TargetClusterTextFieldProps extends Omit<AsyncDropdownProps, "options"> {
+    excludeRoxie?: boolean;
+}
+
+export interface TargetClusterOption extends IDropdownOption {
+    queriesOnly: boolean;
 }
 
 export const TargetClusterTextField: React.FunctionComponent<TargetClusterTextFieldProps> = (props) => {
 
     const [targetClusters, defaultCluster] = useLogicalClusters();
-    const [options, setOptions] = React.useState<IDropdownOption[]>();
-    const [defaultRow, setDefaultRow] = React.useState<IDropdownOption>();
-    const { onChange, required, selectedKey } = { ...props };
+    const [options, setOptions] = React.useState<IDropdownOption[] | undefined>();
+    const { excludeRoxie = true } = { ...props };
 
     React.useEffect(() => {
-        const options = targetClusters?.filter(row => {
-            return !(row.Type === "roxie" && row.QueriesOnly === true);
-        })?.map(row => {
+        let clusters = targetClusters;
+        if (excludeRoxie) {
+            clusters = clusters?.filter(row => {
+                return !(row.Type === "roxie" && row.QueriesOnly === true);
+            });
+        }
+        setOptions(clusters?.map(row => {
             return {
                 key: row.Name || "unknown",
                 text: row.Name + (row.Name !== row.Type ? ` (${row.Type})` : ""),
-                type: row.Type
+                selected: row.Name === defaultCluster?.Name,
+                type: row.Type,
+                queriesOnly: row.QueriesOnly || false
             };
-        }) || [];
-        setOptions(options);
+        }));
+    }, [defaultCluster, excludeRoxie, targetClusters]);
 
-        if (autoSelectDropdown(selectedKey, required)) {
-            const selectedItem = options.filter(row => row.key === defaultCluster?.Name)[0];
-            if (selectedItem) {
-                setDefaultRow(selectedItem);
-                onChange(undefined, selectedItem);
-            }
-        }
-    }, [targetClusters, defaultCluster, onChange, required, selectedKey]);
-
-    return <AsyncDropdown {...props} selectedKey={props.selectedKey || defaultRow?.key as string} options={options} />;
+    return <AsyncDropdown {...props} options={options} />;
 };
 
 export interface TargetDropzoneTextFieldProps extends Omit<AsyncDropdownProps, "options"> {
@@ -343,7 +362,7 @@ export interface TargetDropzoneTextFieldProps extends Omit<AsyncDropdownProps, "
 
 export const TargetDropzoneTextField: React.FunctionComponent<TargetDropzoneTextFieldProps> = (props) => {
 
-    const [targetDropzones, setTargetDropzones] = React.useState<IDropdownOption[]>();
+    const [targetDropzones, setTargetDropzones] = React.useState<IDropdownOption[] | undefined>();
 
     React.useEffect(() => {
         TpDropZoneQuery({}).then(({ TpDropZoneQueryResponse }) => {
@@ -353,7 +372,7 @@ export const TargetDropzoneTextField: React.FunctionComponent<TargetDropzoneText
                     text: row.Name,
                     path: row.Path
                 };
-            }) || []);
+            }));
         }).catch(err => logger.error(err));
     }, []);
 
@@ -366,7 +385,7 @@ export interface TargetServerTextFieldProps extends Omit<AsyncDropdownProps, "op
 
 export const TargetServerTextField: React.FunctionComponent<TargetServerTextFieldProps> = (props) => {
 
-    const [targetServers, setTargetServers] = React.useState<IDropdownOption[]>();
+    const [targetServers, setTargetServers] = React.useState<IDropdownOption[] | undefined>();
 
     React.useEffect(() => {
         TpDropZoneQuery({ Name: "" }).then(response => {
@@ -377,7 +396,7 @@ export const TargetServerTextField: React.FunctionComponent<TargetServerTextFiel
                     text: n.Netaddress,
                     OS: n.OS
                 };
-            }) || []);
+            }));
         }).catch(err => logger.error(err));
     }, [props.selectedKey, props.dropzone]);
 
@@ -571,6 +590,7 @@ export const UserGroupsField: React.FunctionComponent<UserGroupsProps> = (props)
             .then(({ UserGroupEditInputResponse }) => {
                 const groups = UserGroupEditInputResponse?.Groups?.Group
                     .filter(group => group.name !== "Administrators")
+                    .sort((l, r) => l.name.localeCompare(r.name))
                     .map(group => {
                         return {
                             key: group.name,
@@ -632,15 +652,13 @@ export const PermissionTypeField: React.FunctionComponent<PermissionTypeProps> =
     return <AsyncDropdown {...props} options={baseDns} />;
 };
 
-export interface CloudContainerNameFieldProps extends Omit<AsyncDropdownProps, "options"> {
+export interface CloudContainerNameFieldProps extends Omit<IComboBoxProps, "options"> {
 }
 
 export const CloudContainerNameField: React.FunctionComponent<CloudContainerNameFieldProps> = (props) => {
 
     const [cloudContainerNames] = useContainerNames();
-    const [options, setOptions] = React.useState<IDropdownOption[]>();
-    const [defaultRow, setDefaultRow] = React.useState<IDropdownOption>();
-    const { onChange, required, selectedKey } = { ...props };
+    const [options, setOptions] = React.useState<IComboBoxOption[]>();
 
     React.useEffect(() => {
         const options = cloudContainerNames?.map(row => {
@@ -650,17 +668,9 @@ export const CloudContainerNameField: React.FunctionComponent<CloudContainerName
             };
         }) || [];
         setOptions(options);
+    }, [cloudContainerNames]);
 
-        if (autoSelectDropdown(selectedKey, required)) {
-            const selectedItem = options[0];
-            if (selectedItem) {
-                setDefaultRow(selectedItem);
-                onChange(undefined, selectedItem);
-            }
-        }
-    }, [onChange, required, selectedKey, cloudContainerNames]);
-
-    return <AsyncDropdown {...props} selectedKey={props.selectedKey || defaultRow?.key as string} options={options} />;
+    return <ComboBox {...props} allowFreeform={true} autoComplete={"on"} options={options} />;
 };
 
 const states = Object.keys(States).map(s => States[s]);
@@ -686,12 +696,14 @@ export function createInputs(fields: Fields, onChange?: (id: string, newValue: a
                         type={field.type}
                         name={fieldID}
                         value={field.value}
+                        title={field.value}
                         placeholder={field.placeholder}
                         onChange={(evt, newValue) => onChange(fieldID, newValue)}
                         borderless={field.readonly && !field.multiline}
                         readOnly={field.readonly}
                         required={field.required}
                         multiline={field.multiline}
+                        errorMessage={field.errorMessage ?? ""}
                         canRevealPassword={field.type === "password" ? true : false}
                         revealPasswordAriaLabel={nlsHPCC.ShowPassword}
                     />
@@ -1110,7 +1122,6 @@ export function createInputs(fields: Fields, onChange?: (id: string, newValue: a
                     label: field.label,
                     field: <CloudContainerNameField
                         key={fieldID}
-                        selectedKey={field.value}
                         onChange={(ev, row) => {
                             onChange(fieldID, row.key);
                             setDropzone(row.key as string);

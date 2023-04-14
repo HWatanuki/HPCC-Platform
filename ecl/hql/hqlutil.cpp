@@ -4662,6 +4662,9 @@ void debugTrackDifference(IHqlExpression * expr)
 
 static IHqlExpression * expandConditions(IHqlExpression * expr, DependenciesUsed & dependencies, HqlExprArray & conds, HqlExprArray & values)
 {
+    while (expr->getOperator() == no_alias_scope)
+        expr = expr->queryChild(0);
+
     if (expr->getOperator() != no_if)
         return expr;
 
@@ -5012,14 +5015,14 @@ bool containsExpression(IHqlExpression * expr, IHqlExpression * search)
     return doContainsExpression(expr, search);
 }
 
-static bool doContainsSeqId(IHqlExpression * expr, unsigned __int64 search)
+static IHqlExpression * doContainedSeqId(IHqlExpression * expr, unsigned __int64 search)
 {
     for (;;)
     {
         if (expr->queryTransformExtra())
-            return false;
+            return nullptr;
         if (querySeqId(expr) == search)
-            return true;
+            return expr;
         expr->setTransformExtraUnlinked(expr);
         IHqlExpression * body = expr->queryBody(true);
         if (body == expr)
@@ -5028,16 +5031,17 @@ static bool doContainsSeqId(IHqlExpression * expr, unsigned __int64 search)
     }
     ForEachChild(i, expr)
     {
-        if (doContainsSeqId(expr->queryChild(i), search))
-            return true;
+        IHqlExpression * match = doContainedSeqId(expr->queryChild(i), search);
+        if (match)
+            return match;
     }
-    return false;
+    return nullptr;
 }
 
-bool containsSeqId(IHqlExpression * expr, unsigned __int64 search)
+IHqlExpression * containedSeqId(IHqlExpression * expr, unsigned __int64 search)
 {
     TransformMutexBlock lock;
-    return doContainsSeqId(expr, search);
+    return doContainedSeqId(expr, search);
 }
 
 static bool doContainsOperator(IHqlExpression * expr, node_operator search)
@@ -6588,7 +6592,7 @@ IHqlExpression * extractCppBodyAttrs(unsigned lenBuffer, const char * buffer)
             ignore = true; // allow whitespace in front of #option
             break;
         case '#':
-            if (prev == '\n')
+            if (iseol(prev))
             {
                 if ((i + 1 + 6 < lenBuffer) && memicmp(buffer+i+1, "option", 6) == 0)
                 {
@@ -6626,6 +6630,8 @@ IHqlExpression * extractCppBodyAttrs(unsigned lenBuffer, const char * buffer)
                         OwnedHqlExpr arg = createConstant(restOfLine.getClear());
                         attrs.setown(createComma(attrs.getClear(), createAttribute(linkAtom, arg.getClear())));
                     }
+                    // end is pointing at an end of line character - ensure prev is set correctly
+                    next = '\n';
                 }
             }
         }
@@ -8855,6 +8861,7 @@ bool createMangledFunctionName(StringBuffer & mangled, IHqlExpression * funcdef,
     switch (compiler)
     {
     case GccCppCompiler:
+    case ClangCppCompiler:
         {
             GccCppNameMangler mangler;
             return mangler.mangleFunctionName(mangled, funcdef);

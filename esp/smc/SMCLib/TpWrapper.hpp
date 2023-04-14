@@ -126,7 +126,6 @@ using std::string;
 
 #define SDS_LOCK_TIMEOUT 30000
 
-
 class TPWRAPPER_API CTpWrapper : public CInterface  
 {
     
@@ -143,6 +142,9 @@ private:
         bool slaveNode, IArrayOf<IEspTpMachine>& machineList);
     void appendThorMachineList(double clientVersion, IConstEnvironment* constEnv, INode& node, const char* clusterName,
          const char* machineType, unsigned& processNumber, unsigned channels, const char* directory, IArrayOf<IEspTpMachine>& machineList);
+    void getRoxieServices(IPropertyTree* environmentRoot, const char* serviceName, IArrayOf<IConstHPCCService>& services);
+    void getRoxieService(IPropertyTree* clusterTree, IArrayOf<IConstHPCCService>& services);
+    void getESPServices(IPropertyTree* environmentRoot, const char* serviceType, const char* serviceName, IArrayOf<IConstHPCCService>& services);
 
 #ifndef _CONTAINERIZED
     IPropertyTree* getEnvironment(const char* xpath);
@@ -229,6 +231,7 @@ extern TPWRAPPER_API bool validateDataPlaneName(const char *remoteDali, const ch
 extern TPWRAPPER_API bool matchNetAddressRequest(const char* netAddressReg, bool ipReq, IConstTpMachine& tpMachine);
 
 extern TPWRAPPER_API bool validateDropZonePath(const char* dropZoneName, const char* netAddr, const char* pathToCheck);
+extern TPWRAPPER_API SecAccessFlags getDropZoneScopePermissions(IEspContext& context, const char * dropZoneName, const char * dropZonePath, const char * dropZoneHost);
 
 #endif //_ESPWIZ_TpWrapper_HPP__
 

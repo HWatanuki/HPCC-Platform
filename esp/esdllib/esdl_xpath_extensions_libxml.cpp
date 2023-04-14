@@ -38,6 +38,8 @@
 
 #include "espcontext.hpp"
 #include "esdl_script.hpp"
+#include "tokenserialization.hpp"
+#include "txsummary.hpp"
 
 //only support libxml2 for now
 
@@ -63,7 +65,7 @@ void addFeaturesToAccessMap(MapStringTo<SecAccessFlags> &accessmap, const char *
     }
 }
 
-inline IEsdlScriptContext *getEsdlScriptContext(xmlXPathParserContextPtr ctxt)
+inline IEsdlScriptContext *queryEsdlScriptContext(xmlXPathParserContextPtr ctxt)
 {
     if (!ctxt || !ctxt->context || !ctxt->context->userData)
         return nullptr;
@@ -71,12 +73,12 @@ inline IEsdlScriptContext *getEsdlScriptContext(xmlXPathParserContextPtr ctxt)
     return reinterpret_cast<IEsdlScriptContext *>(ctxt->context->userData);
 }
 
-inline IEspContext *getEspContext(xmlXPathParserContextPtr ctxt)
+inline IEspContext *queryEspContext(xmlXPathParserContextPtr ctxt)
 {
-    IEsdlScriptContext *scriptContext = getEsdlScriptContext(ctxt);
-    if (!scriptContext || !scriptContext->queryEspContext())
+    IEsdlScriptContext *scriptContext = queryEsdlScriptContext(ctxt);
+    if (!scriptContext)
         return nullptr;
-    return reinterpret_cast<IEspContext *>(scriptContext->queryEspContext());
+    return scriptContext->queryEspContext();
 }
 
 /**
@@ -88,7 +90,7 @@ inline IEspContext *getEspContext(xmlXPathParserContextPtr ctxt)
  */
 static void validateFeaturesAccessFunction (xmlXPathParserContextPtr ctxt, int nargs)
 {
-    IEspContext *espContext = getEspContext(ctxt);
+    IEspContext *espContext = queryEspContext(ctxt);
     if (!espContext)
     {
         xmlXPathSetError((ctxt), XPATH_INVALID_CTXT);
@@ -126,7 +128,7 @@ static void validateFeaturesAccessFunction (xmlXPathParserContextPtr ctxt, int n
  */
 static void secureAccessFlagsFunction (xmlXPathParserContextPtr ctxt, int nargs)
 {
-    IEspContext *espContext = getEspContext(ctxt);
+    IEspContext *espContext = queryEspContext(ctxt);
     if (!espContext)
     {
         xmlXPathSetError((ctxt), XPATH_INVALID_CTXT);
@@ -165,7 +167,7 @@ static void secureAccessFlagsFunction (xmlXPathParserContextPtr ctxt, int nargs)
  */
 static void getFeatureSecAccessFlagsFunction (xmlXPathParserContextPtr ctxt, int nargs)
 {
-    IEspContext *espContext = getEspContext(ctxt);
+    IEspContext *espContext = queryEspContext(ctxt);
     if (!espContext)
     {
         xmlXPathSetError((ctxt), XPATH_INVALID_CTXT);
@@ -197,7 +199,7 @@ static void getFeatureSecAccessFlagsFunction (xmlXPathParserContextPtr ctxt, int
  */
 static void getStoredStringValueFunction (xmlXPathParserContextPtr ctxt, int nargs)
 {
-    IEsdlScriptContext *scriptContext = getEsdlScriptContext(ctxt);
+    IEsdlScriptContext *scriptContext = queryEsdlScriptContext(ctxt);
     if (!scriptContext)
     {
         xmlXPathSetError((ctxt), XPATH_INVALID_CTXT);
@@ -230,7 +232,7 @@ static void getStoredStringValueFunction (xmlXPathParserContextPtr ctxt, int nar
  */
 static void scriptGetDataSectionFunctionImpl (xmlXPathParserContextPtr ctxt, int nargs, bool ensure)
 {
-    IEsdlScriptContext *scriptContext = getEsdlScriptContext(ctxt);
+    IEsdlScriptContext *scriptContext = queryEsdlScriptContext(ctxt);
     if (!scriptContext)
     {
         xmlXPathSetError((ctxt), XPATH_INVALID_CTXT);
@@ -294,7 +296,7 @@ static void scriptGetDataSectionFunction (xmlXPathParserContextPtr ctxt, int nar
  */
 static void getLogOptionFunction (xmlXPathParserContextPtr ctxt, int nargs)
 {
-    IEsdlScriptContext *scriptContext = getEsdlScriptContext(ctxt);
+    IEsdlScriptContext *scriptContext = queryEsdlScriptContext(ctxt);
     if (!scriptContext)
     {
         xmlXPathSetError((ctxt), XPATH_INVALID_CTXT);
@@ -327,7 +329,7 @@ static void getLogOptionFunction (xmlXPathParserContextPtr ctxt, int nargs)
  */
 static void getLogProfileFunction (xmlXPathParserContextPtr ctxt, int nargs)
 {
-    IEsdlScriptContext *scriptContext = getEsdlScriptContext(ctxt);
+    IEsdlScriptContext *scriptContext = queryEsdlScriptContext(ctxt);
     if (!scriptContext)
     {
         xmlXPathSetError((ctxt), XPATH_INVALID_CTXT);
@@ -355,7 +357,7 @@ static void getLogProfileFunction (xmlXPathParserContextPtr ctxt, int nargs)
  */
 static void logOptionExistsFunction (xmlXPathParserContextPtr ctxt, int nargs)
 {
-    IEsdlScriptContext *scriptContext = getEsdlScriptContext(ctxt);
+    IEsdlScriptContext *scriptContext = queryEsdlScriptContext(ctxt);
     if (!scriptContext)
     {
         xmlXPathSetError((ctxt), XPATH_INVALID_CTXT);
@@ -386,7 +388,7 @@ static void logOptionExistsFunction (xmlXPathParserContextPtr ctxt, int nargs)
  */
 static void storedValueExistsFunction (xmlXPathParserContextPtr ctxt, int nargs)
 {
-    IEsdlScriptContext *scriptContext = getEsdlScriptContext(ctxt);
+    IEsdlScriptContext *scriptContext = queryEsdlScriptContext(ctxt);
     if (!scriptContext)
     {
         xmlXPathSetError((ctxt), XPATH_INVALID_CTXT);
@@ -416,7 +418,7 @@ static void storedValueExistsFunction (xmlXPathParserContextPtr ctxt, int nargs)
 //
 static void strTokenizeFunction(xmlXPathParserContextPtr ctxt, int nargs)
 {
-    IEsdlScriptContext *scriptContext = getEsdlScriptContext(ctxt);
+    IEsdlScriptContext *scriptContext = queryEsdlScriptContext(ctxt);
     if (!scriptContext)
     {
         xmlXPathSetError((ctxt), XPATH_INVALID_CTXT);
@@ -472,6 +474,580 @@ static void strTokenizeFunction(xmlXPathParserContextPtr ctxt, int nargs)
     xmlFree(delimiters);
 }
 
+static void deprecatedEncryptString(xmlXPathParserContextPtr ctxt, int nargs)
+{
+    if (nargs != 1)
+    {
+        xmlXPathSetArityError(ctxt);
+        return;
+    }
+
+    xmlChar *toEncrypt = xmlXPathPopString(ctxt);
+    if (xmlXPathCheckError(ctxt)) //includes null check
+        return;
+
+    StringBuffer encrypted;
+    try
+    {
+        encrypt(encrypted, (const char*)toEncrypt);
+    }
+    catch (IException* e)
+    {
+        e->Release();
+        xmlXPathSetError(ctxt, XPATH_EXPR_ERROR);
+    }
+    catch (...)
+    {
+        xmlXPathSetError(ctxt, XPATH_EXPR_ERROR);
+    }
+    if (!xmlXPathCheckError(ctxt))
+        xmlXPathReturnString(ctxt, xmlStrdup((const xmlChar *)encrypted.str()));
+    xmlFree(toEncrypt);
+}
+
+static void deprecatedDecryptString(xmlXPathParserContextPtr ctxt, int nargs)
+{
+    if (nargs != 1)
+    {
+        xmlXPathSetArityError(ctxt);
+        return;
+    }
+
+    xmlChar *toDecrypt = xmlXPathPopString(ctxt);
+    if (xmlXPathCheckError(ctxt)) //includes null check
+        return;
+
+    StringBuffer decrypted;
+    try
+    {
+        decrypt(decrypted, (const char*)toDecrypt);
+    }
+    catch (IException* e)
+    {
+        e->Release();
+        xmlXPathSetError(ctxt, XPATH_EXPR_ERROR);
+    }
+    catch (...)
+    {
+        xmlXPathSetError(ctxt, XPATH_EXPR_ERROR);
+    }
+    if (!xmlXPathCheckError(ctxt))
+        xmlXPathReturnString(ctxt, xmlStrdup((const xmlChar *)decrypted.str()));
+    xmlFree(toDecrypt);
+}
+
+static void encodeBase64String(xmlXPathParserContextPtr ctxt, int nargs)
+{
+    if (0 == nargs || nargs > 2)
+    {
+        xmlXPathSetArityError(ctxt);
+        return;
+    }
+
+    xmlChar *toEncode = xmlXPathPopString(ctxt);
+    if (xmlXPathCheckError(ctxt)) //includes null check
+        return;
+    bool lineBreaks = false;
+    if (2 == nargs)
+    {
+        lineBreaks = xmlXPathPopBoolean(ctxt);
+        if (xmlXPathCheckError(ctxt))
+        {
+            xmlFree(toEncode);
+            return;
+        }
+    }
+
+    StringBuffer encoded;
+    JBASE64_Encode((const char*)toEncode, long(strlen((const char*)toEncode)), encoded, lineBreaks);
+    xmlXPathReturnString(ctxt, xmlStrdup((const xmlChar *)encoded.str()));
+    xmlFree(toEncode);
+}
+
+static void decodeBase64String(xmlXPathParserContextPtr ctxt, int nargs)
+{
+    if (nargs != 1)
+    {
+        xmlXPathSetArityError(ctxt);
+        return;
+    }
+
+    xmlChar *toDecode = xmlXPathPopString(ctxt);
+    if (xmlXPathCheckError(ctxt)) //includes null check
+        return;
+
+    StringBuffer decoded;
+    JBASE64_Decode((const char*)toDecode, decoded);
+    xmlXPathReturnString(ctxt, xmlStrdup((const xmlChar *)decoded.str()));
+    xmlFree(toDecode);
+}
+
+static void escapeXmlCharacters(xmlXPathParserContextPtr ctxt, int nargs)
+{
+    if (nargs != 1)
+    {
+        xmlXPathSetArityError(ctxt);
+        return;
+    }
+
+    xmlChar *toEncode = xmlXPathPopString(ctxt);
+    if (xmlXPathCheckError(ctxt)) //includes null check
+        return;
+
+    StringBuffer encoded;
+    encodeXML((const char*)toEncode, encoded);
+    xmlXPathReturnString(ctxt, xmlStrdup((const xmlChar *)encoded.str()));
+    xmlFree(toEncode);
+}
+
+static void unescapeXmlCharacters(xmlXPathParserContextPtr ctxt, int nargs)
+{
+    if (nargs != 1)
+    {
+        xmlXPathSetArityError(ctxt);
+        return;
+    }
+
+    xmlChar *toDecode = xmlXPathPopString(ctxt);
+    if (xmlXPathCheckError(ctxt)) //includes null check
+        return;
+
+    StringBuffer decoded;
+    decodeXML((const char*)toDecode, decoded);
+    xmlXPathReturnString(ctxt, xmlStrdup((const xmlChar *)decoded.str()));
+    xmlFree(toDecode);
+}
+
+static void compressString(xmlXPathParserContextPtr ctxt, int nargs)
+{
+    if (nargs != 1)
+    {
+        xmlXPathSetArityError(ctxt);
+        return;
+    }
+
+    xmlChar *toCompress = xmlXPathPopString(ctxt);
+    if (xmlXPathCheckError(ctxt))
+        return;
+
+    size32_t len = size32_t(strlen((const char *)toCompress)) + 1;
+    MemoryBuffer compressed;
+    compressToBuffer(compressed, len, (void *)toCompress);
+    StringBuffer encoded;
+    JBASE64_Encode((void*)compressed.bufferBase(), compressed.length(), encoded, false);
+    xmlXPathReturnString(ctxt, xmlStrdup((const xmlChar *)encoded.str()));
+
+    xmlFree(toCompress);
+}
+
+static void decompressString(xmlXPathParserContextPtr ctxt, int nargs)
+{
+    if (nargs != 1)
+    {
+        xmlXPathSetArityError(ctxt);
+        return;
+    }
+
+    xmlChar *toDecode = xmlXPathPopString(ctxt);
+    if (xmlXPathCheckError(ctxt))
+        return;
+    if (isEmptyString((const char*)toDecode))
+    {
+        xmlXPathSetError(ctxt, XPATH_EXPR_ERROR);
+        return;
+    }
+
+    MemoryBuffer toDecompress;
+    JBASE64_Decode((const char *)toDecode, toDecompress);
+    if (!toDecompress.length())
+    {
+        xmlXPathSetError(ctxt, XPATH_EXPR_ERROR);
+        return;
+    }
+
+    try
+    {
+        MemoryBuffer decompressed;
+        decompressToBuffer(decompressed, toDecompress);
+        xmlXPathReturnString(ctxt, xmlStrdup(decompressed.bytes()));
+    }
+    catch (IException* e)
+    {
+        e->Release();
+        xmlXPathSetError(ctxt, XPATH_EXPR_ERROR);
+    }
+    catch (...)
+    {
+        xmlXPathSetError(ctxt, XPATH_EXPR_ERROR);
+    }
+
+    xmlFree(toDecode);
+}
+
+static void toXmlString(xmlXPathParserContextPtr ctxt, int nargs)
+{
+    if (nargs != 1)
+    {
+        xmlXPathSetArityError(ctxt);
+        return;
+    }
+
+    xmlNodeSetPtr toSerialize = xmlXPathPopNodeSet(ctxt);
+    if (xmlXPathCheckError(ctxt))
+        return;
+
+    StringBuffer xml;
+    for (int i = 0; i < toSerialize->nodeNr; i++)
+    {
+        xmlNodePtr node = toSerialize->nodeTab[i];
+        if (!node)
+            continue;
+        xmlOutputBufferPtr xmlOut = xmlAllocOutputBuffer(nullptr);
+        xmlNodeDumpOutput(xmlOut, node->doc, node, 0, 1, nullptr);
+        xmlOutputBufferFlush(xmlOut);
+        xmlBufPtr buf = (xmlOut->conv != nullptr) ? xmlOut->conv : xmlOut->buffer;
+        if (xmlBufUse(buf))
+            xml.append(xmlBufUse(buf), (const char *)xmlBufContent(buf));
+        xmlOutputBufferClose(xmlOut);
+    }
+    xmlXPathReturnString(ctxt, xmlStrdup((const xmlChar *)xml.str()));
+
+    xmlXPathFreeNodeSet(toSerialize);
+}
+
+static void getTxSummary(xmlXPathParserContextPtr ctxt, int nargs)
+{
+    IEsdlScriptContext *scriptContext = queryEsdlScriptContext(ctxt);
+    CTxSummary* txSummary = nullptr;
+    if (scriptContext)
+    {
+        IEspContext* espContext = scriptContext->queryEspContext();
+        if (espContext)
+            txSummary = espContext->queryTxSummary();
+    }
+    if (!txSummary)
+    {
+        xmlXPathSetError((ctxt), XPATH_INVALID_CTXT);
+        return;
+    }
+
+    if (nargs > 3)
+    {
+        xmlXPathSetArityError(ctxt);
+        return;
+    }
+
+    unsigned style = TXSUMMARY_OUT_TEXT;
+    LogLevel level = LogMin;
+    unsigned group = TXSUMMARY_GRP_ENTERPRISE;
+    xmlChar* tmp;
+    if (3 <= nargs)
+    {
+        tmp = xmlXPathPopString(ctxt);
+        if (xmlXPathCheckError(ctxt))
+            return;
+        if (*tmp)
+        {
+            if (strieq((const char*)tmp, "core"))
+                group = TXSUMMARY_GRP_CORE;
+            else if (!streq((const char*)tmp, "enterprise"))
+            {
+                xmlFree(tmp);
+                xmlXPathSetError((ctxt), XPATH_EXPR_ERROR);
+                return;
+            }
+        }
+        xmlFree(tmp);
+    }
+    if (2 <= nargs)
+    {
+        tmp = xmlXPathPopString(ctxt);
+        if (xmlXPathCheckError(ctxt))
+            return;
+        if (*tmp)
+        {
+            if (strieq((const char*)tmp, "normal") || streq((const char*)tmp, "5"))
+                level = LogNormal;
+            else if (strieq((const char*)tmp, "max") || streq((const char*)tmp, "10"))
+                level = LogMax;
+            else if (!strieq((const char*)tmp, "min"))
+            {
+                if (TokenDeserializer().deserialize((const char*)tmp, level) != Deserialization_SUCCESS || level < LogMin || level > LogMax)
+                {
+                    xmlFree(tmp);
+                    xmlXPathSetError((ctxt), XPATH_EXPR_ERROR);
+                    return;
+                }
+            }
+        }
+        xmlFree(tmp);
+    }
+    if (1 <= nargs)
+    {
+        tmp = xmlXPathPopString(ctxt);
+        if (xmlXPathCheckError(ctxt))
+            return;
+        if (*tmp)
+        {
+            if (strieq((const char*)tmp, "json"))
+                style = TXSUMMARY_OUT_JSON;
+            else if (!strieq((const char*)tmp, "text"))
+            {
+                xmlFree(tmp);
+                xmlXPathSetError((ctxt), XPATH_EXPR_ERROR);
+                return;
+            }
+        }
+        xmlFree(tmp);
+    }
+
+    StringBuffer output;
+    txSummary->serialize(output, level, group, style);
+    xmlXPathReturnString(ctxt, xmlStrdup((const xmlChar*)output.str()));
+}
+
+static void maskValue(xmlXPathParserContextPtr ctxt, int nargs)
+{
+    IEsdlScriptContext *scriptContext = queryEsdlScriptContext(ctxt);
+    if (!scriptContext)
+    {
+        xmlXPathSetError((ctxt), XPATH_INVALID_CTXT);
+        return;
+    }
+    Owned<IDataMaskingProfileContext> masker(scriptContext->getMasker());
+
+    if (nargs < 2 || nargs > 3)
+    {
+        xmlXPathSetArityError(ctxt);
+        return;
+    }
+
+    StringBuffer value, valueType, maskStyle;
+    xmlChar* tmp;
+    if (3 <= nargs)
+    {
+        tmp = xmlXPathPopString(ctxt);
+        if (xmlXPathCheckError(ctxt))
+            return;
+        maskStyle.append((const char*)tmp);
+        xmlFree(tmp);
+    }
+
+    tmp = xmlXPathPopString(ctxt);
+    if (xmlXPathCheckError(ctxt))
+        return;
+    valueType.append((const char*)tmp);
+    xmlFree(tmp);
+
+    tmp = xmlXPathPopString(ctxt);
+    if (xmlXPathCheckError(ctxt))
+        return;
+    value.append((const char*)tmp);
+    xmlFree(tmp);
+
+    if (masker)
+        masker->maskValue(valueType, maskStyle, const_cast<char*>(value.str()), 0, value.length(), false);
+
+    xmlXPathReturnString(ctxt, xmlStrdup((const xmlChar*)value.str()));
+}
+
+static void maskContent(xmlXPathParserContextPtr ctxt, int nargs)
+{
+    IEsdlScriptContext *scriptContext = queryEsdlScriptContext(ctxt);
+    if (!scriptContext)
+    {
+        xmlXPathSetError((ctxt), XPATH_INVALID_CTXT);
+        return;
+    }
+    Owned<IDataMaskingProfileContext> masker(scriptContext->getMasker());
+
+    if (nargs < 1 || nargs > 2)
+    {
+        xmlXPathSetArityError(ctxt);
+        return;
+    }
+
+    StringBuffer content, contentType;
+    xmlChar* tmp;
+    if (2 <= nargs)
+    {
+        tmp = xmlXPathPopString(ctxt);
+        if (xmlXPathCheckError(ctxt))
+            return;
+        contentType.append((const char*)tmp);
+        xmlFree(tmp);
+    }
+
+    tmp = xmlXPathPopString(ctxt);
+    if (xmlXPathCheckError(ctxt))
+        return;
+    content.append((const char*)tmp);
+    xmlFree(tmp);
+
+    if (masker)
+        masker->maskContent(contentType, const_cast<char*>(content.str()), 0, content.length());
+
+    xmlXPathReturnString(ctxt, xmlStrdup((const xmlChar*)content.str()));
+}
+
+static void getMaskValueBehavior(xmlXPathParserContextPtr ctxt, int nargs)
+{
+    IEsdlScriptContext *scriptContext = queryEsdlScriptContext(ctxt);
+    if (!scriptContext)
+    {
+        xmlXPathSetError((ctxt), XPATH_INVALID_CTXT);
+        return;
+    }
+    Owned<IDataMaskingProfileContext> masker(scriptContext->getMasker());
+
+    if (nargs < 1 || nargs > 2)
+    {
+        xmlXPathSetArityError(ctxt);
+        return;
+    }
+
+    StringBuffer valueType, maskStyle;
+    xmlChar* tmp;
+    if (2 <= nargs)
+    {
+        tmp = xmlXPathPopString(ctxt);
+        if (xmlXPathCheckError(ctxt))
+            return;
+        maskStyle.append((const char*)tmp);
+        xmlFree(tmp);
+    }
+
+    tmp = xmlXPathPopString(ctxt);
+    if (xmlXPathCheckError(ctxt))
+        return;
+    valueType.append((const char*)tmp);
+    xmlFree(tmp);
+
+    uint8_t matchMask = 0;
+    if (masker && masker->canMaskValue())
+    {
+        static const uint8_t VALUE_TYPE = 1;
+        static const uint8_t MASK_STYLE = 2;
+        static const uint8_t SELECTED = 4;
+        IDataMaskingProfileValueType* vt = masker->inspector().queryValueType(valueType);
+        if (vt)
+            matchMask |= (VALUE_TYPE | SELECTED);
+        else
+        {
+            StringBuffer cachedSet(masker->queryProperty("valuetype-set"));
+            if (!streq(cachedSet, "*"))
+            {
+                // The masker interface exposes what is currently selected by the context. This
+                // is checking for something that is not selected. Checks for individual value
+                // types at runtime should be rare, with decisions made by testing domain identity
+                // or custom property support being preferred. An infrequent update to a small map
+                // is favored over increasing interface complexity.
+                masker->setProperty("valuetype-set", "*");
+                vt = masker->inspector().queryValueType(valueType);
+                if (cachedSet.isEmpty())
+                    masker->removeProperty("valuetype-set");
+                else
+                    masker->setProperty("valuetype-set", cachedSet);
+                if (vt)
+                    matchMask |= VALUE_TYPE;
+            }
+            if (!vt && !streq(valueType, "*") && ((vt = masker->inspector().queryValueType("*")) != nullptr))
+                matchMask |= SELECTED;
+        }
+        if (vt && !maskStyle.isEmpty() && vt->queryMaskStyle(masker, maskStyle))
+        {
+            matchMask |= MASK_STYLE;
+        }
+    }
+
+    xmlXPathReturnNumber(ctxt, (int)matchMask);
+}
+
+static void canMaskContent(xmlXPathParserContextPtr ctxt, int nargs)
+{
+    IEsdlScriptContext *scriptContext = queryEsdlScriptContext(ctxt);
+    if (!scriptContext)
+    {
+        xmlXPathSetError((ctxt), XPATH_INVALID_CTXT);
+        return;
+    }
+
+    if (nargs > 1)
+    {
+        xmlXPathSetArityError(ctxt);
+        return;
+    }
+
+    StringBuffer contentType;
+    if (nargs >= 1)
+    {
+        xmlChar* tmp = xmlXPathPopString(ctxt);
+        if (xmlXPathCheckError(ctxt))
+            return;
+        contentType.append((const char*)tmp);
+        xmlFree(tmp);
+    }
+
+    Owned<IDataMaskingProfileContext> masker(scriptContext->getMasker());
+    bool canMask = masker && masker->canMaskContent() && masker->inspector().hasRule(contentType);
+    xmlXPathReturnBoolean(ctxt, canMask);
+}
+
+static void getMaskingPropertyAwareness(xmlXPathParserContextPtr ctxt, int nargs)
+{
+    IEsdlScriptContext *scriptContext = queryEsdlScriptContext(ctxt);
+    if (!scriptContext)
+    {
+        xmlXPathSetError((ctxt), XPATH_INVALID_CTXT);
+        return;
+    }
+    Owned<IDataMaskingProfileContext> masker(scriptContext->getMasker());
+
+    if (nargs != 1)
+    {
+        xmlXPathSetArityError(ctxt);
+        return;
+    }
+
+    StringBuffer property;
+    xmlChar* tmp = xmlXPathPopString(ctxt);
+    if (xmlXPathCheckError(ctxt))
+        return;
+    property.append((const char*)tmp);
+    xmlFree(tmp);
+
+    uint8_t availability = 0;
+    if (masker)
+    {
+        static const uint8_t ACCEPTED = 1;
+        static const uint8_t USED = 2;
+        if (masker->inspector().usesProperty(property))
+            availability = USED;
+        else if (masker->inspector().acceptsProperty(property))
+            availability = ACCEPTED;
+    }
+
+    xmlXPathReturnNumber(ctxt, (int)availability);
+}
+
+static void isTraceEnabled(xmlXPathParserContextPtr ctxt, int nargs)
+{
+    IEsdlScriptContext *scriptContext = queryEsdlScriptContext(ctxt);
+    if (!scriptContext)
+    {
+        xmlXPathSetError((ctxt), XPATH_INVALID_CTXT);
+        return;
+    }
+
+    if (nargs != 0)
+    {
+        xmlXPathSetArityError(ctxt);
+        return;
+    }
+
+    xmlXPathReturnBoolean(ctxt, scriptContext->isTraceEnabled());
+}
+
 void registerEsdlXPathExtensionsForURI(IXpathContext *xpathContext, const char *uri)
 {
     xpathContext->registerFunction(uri, "validateFeaturesAccess", (void *)validateFeaturesAccessFunction);
@@ -485,6 +1061,22 @@ void registerEsdlXPathExtensionsForURI(IXpathContext *xpathContext, const char *
     xpathContext->registerFunction(uri, "getLogOption", (void *)getLogOptionFunction);
     xpathContext->registerFunction(uri, "logOptionExists", (void *)logOptionExistsFunction);
     xpathContext->registerFunction(uri, "tokenize", (void *)strTokenizeFunction);
+    xpathContext->registerFunction(uri, "deprecatedEncryptString", (void *)deprecatedEncryptString);
+    xpathContext->registerFunction(uri, "deprecatedDecryptString", (void *)deprecatedDecryptString);
+    xpathContext->registerFunction(uri, "encodeBase64String", (void *)encodeBase64String);
+    xpathContext->registerFunction(uri, "decodeBase64String", (void *)decodeBase64String);
+    xpathContext->registerFunction(uri, "escapeXmlCharacters", (void *)escapeXmlCharacters);
+    xpathContext->registerFunction(uri, "unescapeXmlCharacters", (void *)unescapeXmlCharacters);
+    xpathContext->registerFunction(uri, "compressString", (void *)compressString);
+    xpathContext->registerFunction(uri, "decompressString", (void *)decompressString);
+    xpathContext->registerFunction(uri, "toXmlString", (void *)toXmlString);
+    xpathContext->registerFunction(uri, "getTxSummary", (void *)getTxSummary);
+    xpathContext->registerFunction(uri, "maskValue", (void *)maskValue);
+    xpathContext->registerFunction(uri, "maskContent", (void *)maskContent);
+    xpathContext->registerFunction(uri, "getMaskValueBehavior", (void *)getMaskValueBehavior);
+    xpathContext->registerFunction(uri, "canMaskContent", (void *)canMaskContent);
+    xpathContext->registerFunction(uri, "getMaskingPropertyAwareness", (void *)getMaskingPropertyAwareness);
+    xpathContext->registerFunction(uri, "isTraceEnabled", (void *)isTraceEnabled);
 }
 
 void registerEsdlXPathExtensions(IXpathContext *xpathContext, IEsdlScriptContext *context, const StringArray &prefixes)

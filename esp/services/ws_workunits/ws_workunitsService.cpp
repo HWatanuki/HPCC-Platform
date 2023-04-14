@@ -46,6 +46,7 @@
 #include "fvdatasource.hpp"
 #include "fvresultset.ipp"
 #include "ws_wudetails.hpp"
+#include "ws_wuhotspot.hpp"
 #include "wuerror.hpp"
 #include "TpWrapper.hpp"
 #include "LogicFileWrapper.hpp"
@@ -394,6 +395,7 @@ void CWsWorkunitsEx::init(IPropertyTree *cfg, const char *process, const char *s
     DBGLOG("Initializing %s service [process = %s]", service, process);
 
     checkUpdateQuerysetLibraries();
+    espApplicationName.set(process);
 
     daliServers.set(cfg->queryProp("Software/EspProcess/@daliServers"));
     const char *computer = cfg->queryProp("Software/EspProcess/@computer");
@@ -4177,16 +4179,18 @@ bool CWsWorkunitsEx::onWUDetails(IEspContext &context, IEspWUDetailsRequest &req
     try
     {
         StringBuffer wuid(req.getWUID());
-        WsWuHelpers::checkAndTrimWorkunit("WUDetails", wuid);
-
         PROGLOG("WUDetails: %s", wuid.str());
 
-        Owned<IWorkUnitFactory> factory = getWorkUnitFactory(context.querySecManager(), context.queryUser());
-        Owned<IConstWorkUnit> cw = factory->openWorkUnit(wuid.str());
-        if(!cw)
-            throw MakeStringException(ECLWATCH_CANNOT_OPEN_WORKUNIT,"Cannot open workunit %s.",wuid.str());
-        ensureWsWorkunitAccess(context, *cw, SecAccess_Read);
-
+        Owned<IConstWorkUnit> cw;
+        if(!wuid.trim().isEmpty())
+        {
+            WsWuHelpers::checkAndTrimWorkunit("WUDetails", wuid);
+            Owned<IWorkUnitFactory> factory = getWorkUnitFactory(context.querySecManager(), context.queryUser());
+            cw.setown(factory->openWorkUnit(wuid.str()));
+            if(!cw)
+                throw MakeStringException(ECLWATCH_CANNOT_OPEN_WORKUNIT,"Cannot open workunit %s.",wuid.str());
+            ensureWsWorkunitAccess(context, *cw, SecAccess_Read);
+        }
         WUDetails wuDetails(cw, wuid);
         wuDetails.processRequest(req, resp);
     }
@@ -4196,6 +4200,32 @@ bool CWsWorkunitsEx::onWUDetails(IEspContext &context, IEspWUDetailsRequest &req
     }
     return true;
 }
+
+
+bool CWsWorkunitsEx::onWUAnalyseHotspot(IEspContext &context, IEspWUAnalyseHotspotRequest &req, IEspWUAnalyseHotspotResponse &resp)
+{
+    try
+    {
+        StringBuffer wuid(req.getWuid());
+        WsWuHelpers::checkAndTrimWorkunit("WUDetails", wuid);
+
+        PROGLOG("WUAnalyseHotspot: %s", wuid.str());
+
+        Owned<IWorkUnitFactory> factory = getWorkUnitFactory(context.querySecManager(), context.queryUser());
+        Owned<IConstWorkUnit> cw = factory->openWorkUnit(wuid.str());
+        if(!cw)
+            throw MakeStringException(ECLWATCH_CANNOT_OPEN_WORKUNIT,"Cannot open workunit %s.",wuid.str());
+        ensureWsWorkunitAccess(context, *cw, SecAccess_Read);
+
+        processAnalyseHotspot(cw, req, resp);
+    }
+    catch(IException* e)
+    {
+        FORWARDEXCEPTION(context, e,  ECLWATCH_INTERNAL_ERROR);
+    }
+    return true;
+}
+
 
 static void getWUDetailsMetaProperties(IArrayOf<IEspWUDetailsMetaProperty> & properties)
 {
@@ -4855,8 +4885,24 @@ bool CWsWorkunitsEx::onWUCreateZAPInfo(IEspContext &context, IEspWUCreateZAPInfo
         ensureWsWorkunitAccess(context, *cwu, SecAccess_Read);
         PROGLOG("WUCreateZAPInfo(): %s", zapInfoReq.wuid.str());
 
-        zapInfoReq.espIP = req.getESPIPAddress();
-        zapInfoReq.thorIP = req.getThorIPAddress();
+        double version = context.getClientVersion();
+        if (version >= 1.95)
+        {
+            zapInfoReq.esp = req.getESPApplication();
+            if (zapInfoReq.esp.isEmpty())
+                zapInfoReq.esp.set(espApplicationName.get());
+            zapInfoReq.thor = req.getThorProcesses();
+        }
+        else
+        {
+            zapInfoReq.esp = req.getESPIPAddress();
+            if (zapInfoReq.esp.isEmpty())
+            {
+                IpAddress ipaddr = queryHostIP();
+                ipaddr.getIpText(zapInfoReq.esp);
+            }
+            zapInfoReq.thor = req.getThorIPAddress();
+        }
         zapInfoReq.problemDesc = req.getProblemDescription();
         zapInfoReq.whatChanged = req.getWhatChanged();
         zapInfoReq.whereSlow = req.getWhereSlow();
@@ -4915,9 +4961,17 @@ bool CWsWorkunitsEx::onWUGetZAPInfo(IEspContext &context, IEspWUGetZAPInfoReques
         StringBuffer EspIP, ThorIP;
         resp.setWUID(wuid.str());
         resp.setBuildVersion(getBuildVersion());
-        IpAddress ipaddr = queryHostIP();
-        ipaddr.getIpText(EspIP);
-        resp.setESPIPAddress(EspIP.str());
+        double version = context.getClientVersion();
+        if (version >= 1.95)
+            resp.setESPApplication(espApplicationName.get());
+        else
+        {
+            IpAddress ipaddr = queryHostIP();
+            ipaddr.getIpText(EspIP);
+            resp.setESPIPAddress(EspIP.str());
+        }
+        if ((version >= 1.96) && !queryRemoteLogAccessor())
+            resp.setMessage("Warning: may not be able to include log file because Remote Log Access plug-in is not available!");
 
         //Get Archive
         Owned<IConstWUQuery> query = cw->getQuery();
@@ -4927,6 +4981,28 @@ bool CWsWorkunitsEx::onWUGetZAPInfo(IEspContext &context, IEspWUGetZAPInfoReques
             query->getQueryText(queryText);
             if (queryText.length() && isArchiveQuery(queryText.str()))
                 resp.setArchive(queryText.str());
+        }
+
+        if (version >= 1.95)
+        {
+            StringBuffer thorProcesses;
+            Owned<IStringIterator> thorInstances = cw->getProcesses("Thor");
+            ForEach (*thorInstances)
+            {
+                SCMStringBuffer processName;
+                thorInstances->str(processName);
+                if (processName.length() < 1)
+                    continue;
+                if (!thorProcesses.isEmpty())
+                    thorProcesses.append(",");
+                thorProcesses.append(processName);
+            }
+            if (!thorProcesses.isEmpty())
+                resp.setThorProcesses(thorProcesses);
+
+            resp.setEmailTo(zapEmailTo.get());
+            resp.setEmailFrom(zapEmailFrom.get());
+            return true;
         }
 
         //Get Thor IP
@@ -4975,7 +5051,7 @@ bool CWsWorkunitsEx::onWUGetZAPInfo(IEspContext &context, IEspWUGetZAPInfoReques
         }
         if (ThorIP.length())
             resp.setThorIPAddress(ThorIP.str());
-        double version = context.getClientVersion();
+
         if (version >= 1.73)
         {
             resp.setEmailTo(zapEmailTo.get());

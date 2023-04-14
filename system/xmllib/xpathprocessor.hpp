@@ -55,6 +55,7 @@ interface XMLLIB_API IXpathContext : public IInterface
     virtual const char * getVariable(const char * name, StringBuffer & variable) = 0;
     virtual bool addInputXpath(const char * name, const char * xpath) = 0; //values should be declared as parameters before use, "strict parameter mode" requires it
     virtual bool addInputValue(const char * name, const char * value) = 0; //values should be declared as parameters before use, "strict parameter mode" requires it
+    virtual bool checkParameterName(const char * name) = 0;
     virtual bool declareParameter(const char * name, const char *value) = 0;
     virtual bool declareCompiledParameter(const char * name, ICompiledXpath * compiled) = 0;
     virtual void declareRemainingInputs() = 0;
@@ -82,7 +83,7 @@ interface XMLLIB_API IXpathContext : public IInterface
     virtual StringBuffer &toXml(const char *xpath, StringBuffer & xml) = 0;
     virtual void addXmlContent(const char *xml) = 0;
     virtual IXmlWriter *createXmlWriter() = 0;
-    virtual void trace(const char *label, ICompiledXpath * compiledXpath, bool useStdOut) = 0;
+    virtual bool selectText(ICompiledXpath* compiledXpath, StringBuffer& content, bool& isValue) = 0;
 };
 
 interface IXpathContextIterator : extends IIteratorOf<IXpathContext> { };
@@ -152,11 +153,10 @@ extern "C" XMLLIB_API IXpathContext*  getXpathContext(const char * xmldoc, bool 
 #define ESDLScriptCtxSection_ScriptRequest "script_request"
 #define ESDLScriptCtxSection_ScriptResponse "script_response"
 
-interface IEsdlScriptContext : extends IInterface
+interface ISectionalXmlDocModel : extends IInterface
 {
     virtual IXpathContext* createXpathContext(IXpathContext *parent, const char *section, bool strictParameterDeclaration) = 0;
     virtual IXpathContext *getCopiedSectionXpathContext(IXpathContext *parent, const char *tgtSection, const char *srcSection, bool strictParameterDeclaration) = 0;
-    virtual void *queryEspContext() = 0;
     virtual void setContent(const char *section, const char *xml) = 0;
     virtual void appendContent(const char *section, const char *name, const char *xml) = 0;
     virtual void setContent(const char *section, IPropertyTree *tree) = 0;
@@ -170,14 +170,17 @@ interface IEsdlScriptContext : extends IInterface
     virtual void toXML(StringBuffer &xml, const char *section, bool includeParentNode=false) = 0;
     virtual void toXML(StringBuffer &xml) = 0;
     virtual IPropertyTree *createPTreeFromSection(const char *section) = 0;
-    virtual void cleanupBetweenScripts() = 0;
-    virtual void setTraceToStdout(bool val) = 0; //keep it simple for now.  default is to use jlog.  This flag may go away when we give more control over tracing
-    virtual bool getTraceToStdout() = 0;
-    virtual IInterface *queryFunctionRegister() = 0;
-    virtual void setTestMode(bool val) = 0; //enable features that help with unit testing but should never be used in production
-    virtual bool getTestMode() = 0;
+    virtual void cleanupTemporaries() = 0;
 };
 
-extern "C" XMLLIB_API IEsdlScriptContext *createEsdlScriptContext(void * espContext, IInterface *functionRegister);
+/**
+ * @brief Create an instance of a sectional XML document model.
+ *
+ * The `userData` parameter is optional. The value passed is made available to XPath extension
+ * functions and is otherwise unused by the model. The model neither knows nor cares what the
+ * value represents. The caller is responsible for ensuring that the value remains valid for the
+ * life of the model.
+ */
+extern "C" XMLLIB_API ISectionalXmlDocModel *createSectionalXmlDocModel(void * userData);
 
 #endif /* XPATH_MANAGER_HPP_ */

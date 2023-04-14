@@ -364,7 +364,7 @@ public:
     virtual void removeCache(const IResolvedFile *file)
     {
         CriticalBlock b(cacheLock);
-        if (traceLevel > 9)
+        if (doTrace(traceRoxieFiles, TraceFlags::Detailed))
             DBGLOG("removeCache %s", file->queryFileName());
         // NOTE: it's theoretically possible for the final release to happen after a replacement has been inserted into hash table. 
         // So only remove from hash table if what we find there matches the item that is being deleted.
@@ -409,7 +409,7 @@ static bool checkCachedDaliMiss(const char *filename)
 {
     CriticalBlock b(daliMissesCrit);
     bool ret = daliMisses->find(filename) != NULL;
-    if (traceLevel > 9)
+    if (doTrace(traceRoxieFiles, TraceFlags::Max))
         DBGLOG("checkCachedDaliMiss %s returns %d", filename, ret);
     return ret;
 }
@@ -469,7 +469,7 @@ protected:
             result = daliFiles.lookupCache(fileName);
             if (result)
             {
-                if (traceLevel > 9)
+                if (doTrace(traceRoxieFiles, TraceFlags::Max))
                     DBGLOG("resolveLFNusingDaliOrLocal %s - cache hit", fileName);
                 return result;
             }
@@ -567,7 +567,7 @@ protected:
                         // implies that a package file had ~ in subfile names - shouldn't really, but we allow it (and just strip the ~)
                         subFileName.remove(0,1);
                     }
-                    if (traceLevel > 9)
+                    if (doTrace(traceRoxieFiles, TraceFlags::Detailed))
                         DBGLOG("Looking up subfile %s", subFileName.str());
                     AccessMode subAccessMode = AccessMode::readRandom;   // NOTE - overwriting a superfile does NOT require write access to subfiles
                     Owned<const IResolvedFile> subFileInfo = lookupExpandedFileName(subFileName, useCache, cacheResult, subAccessMode, false, false, isPrivilegedUser);
@@ -687,7 +687,7 @@ public:
     {
         StringBuffer fileName;
         expandLogicalFilename(fileName, _fileName, wu, false, ignoreForeignPrefix);
-        if (traceLevel > 5)
+        if (doTrace(traceRoxieFiles, TraceFlags::Max))
             DBGLOG("lookupFileName %s", fileName.str());
 
         const IResolvedFile *result = lookupExpandedFileName(fileName, useCache, cacheResult, AccessMode::readRandom, false, true, isPrivilegedUser);
@@ -698,7 +698,7 @@ public:
                     compulsoryMsg.append(" (Package is compulsory)");
             if (!opt && !pretendAllOpt)
                 throw MakeStringException(ROXIE_FILE_ERROR, "Could not resolve filename %s%s", fileName.str(), compulsoryMsg.str());
-            if (traceLevel > 4)
+        if (doTrace(traceRoxieFiles))
                 DBGLOG("Could not resolve OPT filename %s%s", fileName.str(), compulsoryMsg.str());
         }
         return result;
@@ -1076,7 +1076,7 @@ public:
         Owned<IQueryFactory> f = getQuery(queryName, NULL, logctx);
         if (f)
         {
-            f->gatherStats(statsWu, channel, reset);
+            f->gatherStats(statsWu, graphName, channel, reset);
         }
         else
             throw MakeStringException(ROXIE_UNKNOWN_QUERY, "Unknown query %s", queryName);
@@ -1469,7 +1469,7 @@ public:
                 {
                     statsWu.setown(createLocalWorkUnitFromPTree(createPTreeFromIPT(queryExtendedWU(query->queryWorkUnit())->queryPTree())));
                 }
-                query->gatherStats(statsWu, -1, reset);
+                query->gatherStats(statsWu, graphName, -1, reset);
                 for (unsigned channel = 0; channel < numChannels; channel++)
                     if (agentManagers->item(channel))
                         agentManagers->item(channel)->getStats(queryId, graphName, statsWu, channel+1, reset, logctx);
@@ -1869,6 +1869,8 @@ private:
                             }
                             if (oldPackageManager && oldPackageManager->matches(xmlHash, isActive))
                             {
+                                //Check for any changes to the queryset
+                                oldPackageManager->reloadIncremental();
                                 if (traceLevel)
                                     DBGLOG("Package map %s, active %s already loaded", packageMapId, isActive ? "true" : "false");
                                 stateHash = rtlHash64Data(sizeof(stateHash), &stateHash, oldPackageManager->getHash());
@@ -2514,12 +2516,6 @@ private:
                 topology->setPropInt("@leafCacheMem", leafCacheMB);
                 setLeafCacheMem(leafCacheMB * 0x100000);
             }
-            else if (stricmp(queryName, "control:legacyNodeCache")==0)
-            {
-                bool legacyNodeCache = control->getPropBool("@val", true);
-                topology->setPropInt("@legacyNodeCache", legacyNodeCache);
-                setLegacyNodeCache(legacyNodeCache);
-            }
             else if (stricmp(queryName, "control:listFileOpenErrors")==0)
             {
                 // this just creates a delta state file to remove references to Keys / Files we now longer have interest in
@@ -2646,6 +2642,15 @@ private:
                 if (!parallelAggregate)
                     parallelAggregate = 1;
                 topology->setPropInt("@parallelAggregate", parallelAggregate);
+            }
+            else if (stricmp(queryName, "control:perf")==0)
+            {
+                unsigned perfTime = (unsigned) control->getPropInt64("@time", 60);
+                PerfTracer perf;
+                double interval = control->getPropReal("@interval", 0.2);
+                perf.setInterval(interval);
+                perf.traceFor(perfTime);
+                reply.append(perf.queryResult().str());
             }
             else if (stricmp(queryName, "control:pingInterval")==0)
             {
@@ -2929,7 +2934,7 @@ private:
         case 'T':
             if (stricmp(queryName, "control:testAgentFailure")==0)
             {
-                testAgentFailure = control->getPropInt("@val", 20);
+                testAgentFailure = control->getPropInt("@val", (unsigned) -1);
             }
             else if (stricmp(queryName, "control:timeActivities")==0)
             {
@@ -3215,7 +3220,8 @@ void mergeNode(IPropertyTree *s1, IPropertyTree *s2, unsigned level);
 MergeInfo mergeTable[] =
 {
     {"Query", "@id", mergeStats},
-    {"Graph", "@id", mergeStats},
+    {"Graphs", NULL, mergeStats},
+    {"Graph", "@name", mergeStats},
     {"xgmml", NULL, mergeStats},
     {"graph", NULL, mergeStats},
     {"node",  "@id", mergeNode},
@@ -3319,7 +3325,8 @@ void mergeQueries(IPropertyTree *dest, IPropertyTree *src)
 static const char *g1 =
         "<Stats>"
         "<Query id='stats'>"
-        "<Graph id='graph1'>"
+        "<Graphs>"
+        "<Graph name='graph1'>"
          "<xgmml>"
           "<graph>"
            "<node id='1'>"
@@ -3372,12 +3379,14 @@ static const char *g1 =
           "</graph>"
          "</xgmml>"
         "</Graph>"
+        "</Graphs>"
         "</Query>"
         "</Stats>";
 static const char *g2 =
         "<Stats>"
         "<Query id='stats'>"
-        "<Graph id='graph1'>"
+        "<Graphs>"
+        "<Graph name='graph1'>"
          "<xgmml>"
           "<graph>"
            "<node id='1'>"
@@ -3424,12 +3433,14 @@ static const char *g2 =
           "</graph>"
          "</xgmml>"
         "</Graph>"
+        "</Graphs>"
         "</Query>"
         "</Stats>";
 static const char *expected =
         "<Stats>"
         "<Query id='stats'>"
-        "<Graph id='graph1'>"
+        "<Graphs>"
+        "<Graph name='graph1'>"
          "<xgmml>"
           "<graph>"
            "<node id='1'>"
@@ -3487,6 +3498,7 @@ static const char *expected =
           "</graph>"
          "</xgmml>"
         "</Graph>"
+        "</Graphs>"
         "</Query>"
         "</Stats>"
         ;

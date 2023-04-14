@@ -55,7 +55,7 @@ if(KAFKA)
 
         install(
             TARGETS kafka
-            DESTINATION plugins)
+            DESTINATION plugins CALC_DEPS)
 
         install(
             FILES ${LIBRDKAFKA_LIB_REAL} ${LIBRDKAFKACPP_LIB_REAL}

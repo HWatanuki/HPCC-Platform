@@ -38,6 +38,11 @@
 #include <sys/types.h>
 #include <sys/resource.h>
 #endif
+#ifdef __linux__
+#include <sys/prctl.h>
+#include <sys/ipc.h>
+#include <sys/shm.h>
+#endif
 
 #define LINUX_STACKSIZE_CAP (0x200000)
 
@@ -165,8 +170,8 @@ unsigned WINAPI Thread::_threadmain(LPVOID v)
 void *Thread::_threadmain(void *v)
 #endif
 {
-    resetThreadLogging();
     Thread * t = (Thread *)v;
+    resetThreadLogging(t->logctx, t->traceFlags);
 #ifdef _WIN32
     if (SEHHandling) 
         EnableSEHtranslation();
@@ -371,6 +376,17 @@ void Thread::init(const char *_name)
     stacksize = 0; // default is EXE default stack size  (set by /STACK)
 }
 
+void Thread::getThreadLoggingInfo()
+{
+    ::getThreadLoggingInfo(logctx, traceFlags);
+}
+
+void Thread::setThreadLoggingInfo(const IContextLogger *_logctx, TraceFlags _traceFlags)
+{
+    logctx = _logctx;
+    traceFlags = _traceFlags;
+}
+
 void Thread::start()
 {
     if (alive) {
@@ -561,7 +577,7 @@ void CThreadedPersistent::threadmain()
             break;
         try
         {
-            resetThreadLogging();
+            resetThreadLogging(athread.logctx, athread.traceFlags);
             owner->threadmain();
             // Note we do NOT call the thread reset hook here - these threads are expected to be able to preserve state, I think
         }
@@ -672,6 +688,7 @@ void CAsyncFor::For(unsigned num,unsigned maxatonce,bool abortFollowingException
                 {
                     idx = _idx;
                     self = _self;
+                    getThreadLoggingInfo();
                 }
                 int run()
                 {
@@ -724,6 +741,7 @@ void CAsyncFor::For(unsigned num,unsigned maxatonce,bool abortFollowingException
                 {
                     idx = _idx;
                     self = _self;
+                    getThreadLoggingInfo();
                 }
                 int run()
                 {
@@ -803,6 +821,7 @@ class CPooledThreadWrapper;
 class CThreadPoolBase
 {
 public:
+    CThreadPoolBase() {}
     virtual ~CThreadPoolBase() {}
 protected: friend class CPooledThreadWrapper;
     IExceptionHandler *exceptionHandler;
@@ -816,6 +835,8 @@ protected: friend class CPooledThreadWrapper;
     unsigned defaultmax;
     unsigned targetpoolsize;
     unsigned delay;
+    const IContextLogger *logctx = nullptr;
+    TraceFlags traceFlags = queryDefaultTraceFlags();
     Semaphore availsem;
     std::atomic_uint numrunning{0};
     virtual void notifyStarted(CPooledThreadWrapper *item)=0;
@@ -836,6 +857,8 @@ public:
                          IPooledThread *_thread) // takes ownership of thread
         : Thread(StringBuffer("Member of thread pool: ").append(_parent.poolname).str()), parent(_parent)
     {
+        logctx = parent.logctx;
+        traceFlags = parent.traceFlags;
         thread = _thread;
         handle = _handle;
         runningName.set(_parent.poolname); 
@@ -875,7 +898,7 @@ public:
                 if (parent.stopall)
                     break;
             }
-            resetThreadLogging();
+            resetThreadLogging(logctx, traceFlags);
             parent.notifyStarted(this);
             try
             {
@@ -1266,6 +1289,15 @@ public:
             return true;
         }
         return false;
+    }
+    void getThreadLoggingInfo()
+    {
+        ::getThreadLoggingInfo(logctx, traceFlags);
+    }
+    void setThreadLoggingInfo(const IContextLogger *_logctx, TraceFlags _traceFlags)
+    {
+        logctx = _logctx;
+        traceFlags = _traceFlags;
     }
 };
 
@@ -1708,6 +1740,7 @@ public:
     {
         return pipeProcess;
     }
+    void setAllowTrace() override {}
 };
 
 IPipeProcess *createPipeProcess(const char *allowedprogs)
@@ -1905,6 +1938,7 @@ protected: friend class PipeWriterThread;
     size32_t stderrbufsize;
     StringAttr allowedprogs;
     StringArray env;
+    bool allowTrace = false;
 
     void clearUtilityThreads(bool clearStderr)
     {
@@ -2011,6 +2045,21 @@ public:
             }
             envp.append(nullptr);
         }
+#ifdef __linux__
+        sem_t *mutex = nullptr;
+        int shmid=0;
+        if (allowTrace)
+        {
+            shmid = shmget(0, sizeof(sem_t)*2, IPC_CREAT | SHM_R | SHM_W);
+            assertex(shmid>=0);
+            mutex = (sem_t *) shmat(shmid, NULL, 0);
+            assertex(mutex);
+            int r = sem_init(&mutex[0], 1, 0);
+            assertex(r==0);
+            r = sem_init(&mutex[1], 1, 0);
+            assertex(r==0);
+        }
+#endif
 
         /* NB: Important to call splitargs (which calls malloc) before the fork()
          * and not in the child process. Because performing malloc in the child
@@ -2045,7 +2094,31 @@ public:
         // NOTE - from here to the execvp/_exit call, we must only call "signal-safe" functions, that do not do any memory allocation
         // fork() only clones the one thread from parent process, meaning any mutexes/semaphores protecting multi-threaded access
         // to (for example) malloc cannot be relied upon not to be locked, and will never be unlocked if they are.
-        if (pipeProcess==0) { // child
+        if (pipeProcess)
+        {
+#ifdef __linux__
+            if (allowTrace)
+            {
+                prctl(PR_SET_PTRACER, pipeProcess, 0, 0, 0);
+                sem_post(&mutex[0]);
+                sem_wait(&mutex[1]);
+                sem_destroy(&mutex[0]);
+                sem_destroy(&mutex[1]);
+                shmdt(mutex);
+                shmctl(shmid, IPC_RMID, NULL);
+            }
+#endif
+        }
+        else
+        { // child
+#ifdef __linux__
+            if (allowTrace)
+            {
+                sem_wait(&mutex[0]);
+                sem_post(&mutex[1]);
+                shmdt(mutex);
+            }
+#endif
             if (newProcessGroup)//Force the child process into its own process group, so we can terminate it and its children.
                 setpgid(0,0);
             if (hasinput) {
@@ -2404,6 +2477,11 @@ public:
         CriticalBlock block(sect);
         return pipeProcess;
     }
+    
+    void setAllowTrace() override
+    {
+        allowTrace = true;
+    }
 };
 
 
@@ -2537,4 +2615,72 @@ unsigned threadLogID()  // for use in logging
 #endif
 #endif
     return (unsigned)(memsize_t) GetCurrentThreadId(); // truncated in 64bit
+}
+
+void PerfTracer::setInterval(double _interval)
+{
+    interval = _interval;
+}
+
+void PerfTracer::start()
+{
+#ifdef __linux__
+    dostart(1000000);
+#else
+    UNIMPLEMENTED;
+#endif
+}
+
+void PerfTracer::dostart(unsigned seconds)
+{
+#ifdef __linux__
+    pipe.setown(createPipeProcess());
+    pipe->setAllowTrace();
+    VStringBuffer cmd("doperf %u %u %f", GetCurrentProcessId(), seconds, interval);
+    if (!pipe->run(nullptr, cmd, ".", false, true, false, 1024*1024))
+    {
+        pipe.clear();
+        throw makeStringException(0, "Failed to run doperf");
+    }
+#else
+    UNIMPLEMENTED;
+#endif
+}
+
+void PerfTracer::stop()
+{
+#ifdef __linux__
+    assertex(pipe);
+    ::kill(pipe->getProcessHandle(), SIGINT);
+    dostop();
+#else
+    UNIMPLEMENTED;
+#endif
+}
+
+void PerfTracer::traceFor(unsigned seconds)
+{
+#ifdef __linux__
+    dostart(seconds);
+    dostop();
+#else
+    UNIMPLEMENTED;
+#endif
+}
+
+void PerfTracer::dostop()
+{
+#ifdef __linux__
+    char buf[1024];
+    while (true)
+    {
+        size32_t read = pipe->read(sizeof(buf), buf);
+        if (!read)
+            break;
+        result.append(read, buf);
+    }
+    pipe->wait();
+#else
+    UNIMPLEMENTED;
+#endif
 }

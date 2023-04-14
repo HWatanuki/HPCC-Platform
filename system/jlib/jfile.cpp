@@ -747,6 +747,86 @@ bool CFile::remove()
 #endif
 }
 
+static std::atomic<unsigned> renameRetries{(unsigned)-1}; // initially uninitialized, set on 1st use (in rename)
+
+void setRenameRetries(unsigned numRetries)
+{
+    renameRetries = numRetries;
+}
+
+static unsigned getRenameRetries()
+{
+    unsigned retries;
+    // NB: potentially could be >1 thread here, but that's ok.
+    try
+    {
+        retries = getGlobalConfigSP()->getPropInt("expert/@numRenameRetries");
+    }
+    catch (IException *e) // handle cases where config. not available
+    {
+        EXCLOG(e, "doRename");
+        e->Release();
+        retries = 0;
+    }
+    dbgassertex((unsigned)-1 != retries);
+    setRenameRetries(retries);
+    return retries;
+}
+
+static void doRename(const char *src, const char *dst, const char *callerName)
+{
+    unsigned retriesLeft = renameRetries;
+    unsigned retry = 0;
+    while (true)
+    {
+        if (-1 != ::rename(src, dst))
+            return; // success
+
+        if ((unsigned)-1 == retriesLeft)
+            retriesLeft = getRenameRetries();
+
+        int err = errno; // preserve to use after tracing if exhausted retry attempts
+
+#ifndef _WIN32 // NB: this is primary here to help track down the issue reported in HPCC-28454
+        // why did rename fail? - check that src and path of dst exists (and/or is accessible), and trace it's gid and uid, size and is_dir status.
+
+        DBGLOG("%s-doRename(%s, %s) FAILED (attempt %u)", callerName, src, dst, retry+1);
+
+        struct stat statInfo;
+        CDateTime modTime;
+        StringBuffer modTimeStr;
+        if (0 != stat(src, &statInfo))
+            DBGLOG("src stat[error=%d ('%s')]", errno, strerror(errno));
+        else
+        {
+            timetToIDateTime(&modTime, statInfo.st_mtime);
+            modTime.getString(modTimeStr);
+            DBGLOG("src stat[uid=%u, gid=%u, size=%" I64F "u, dir=%s, modtime=%s]", (unsigned)statInfo.st_uid, (unsigned)statInfo.st_gid, (offset_t)statInfo.st_size, boolToStr(S_ISDIR(statInfo.st_mode)), modTimeStr.str());
+        }
+
+        StringBuffer dstPath;
+        splitDirTail(dst, dstPath);
+
+        if (0 != stat(dstPath, &statInfo))
+            DBGLOG("dst-path stat[error (%d) : %s", errno, strerror(errno));
+        else
+        {
+            timetToIDateTime(&modTime, statInfo.st_mtime);
+            modTime.getString(modTimeStr.clear());
+            DBGLOG("dst-path stat[uid=%u, gid=%u, size=%" I64F "u, dir=%s, modtime=%s]", (unsigned)statInfo.st_uid, (unsigned)statInfo.st_gid, (offset_t)statInfo.st_size, boolToStr(S_ISDIR(statInfo.st_mode)), modTimeStr.str());
+        }
+#endif
+
+        if (0 == retriesLeft)
+            throw makeErrnoExceptionV(err, "%s(%s, %s)", callerName, src, dst);
+
+        MilliSleep(retry>5 ? 5000 : (100 << retry)); // start at 100ms and double each retry, but cap at 5 seconds
+
+        --retriesLeft;
+        ++retry;
+    }
+}
+
 void CFile::rename(const char *newname)
 {
     // now hopefully newname is just file tail 
@@ -766,8 +846,7 @@ void CFile::rename(const char *newname)
         if (rfn.isLocal())
             dst = rfn.getLocalPath(path.clear()).str();
     }
-    if (-1 == ::rename(filename, dst)) 
-        throw makeErrnoExceptionV("CFile::rename(%s, %s)", filename.get(),dst);
+    doRename(filename, dst, "CFile::rename");
     filename.set(path);
 }
 
@@ -795,9 +874,7 @@ void CFile::move(const char *newname)
         Sleep(retry*100); 
     }
 #else
-    int ret=::rename(filename.get(),newname);
-    if (ret==-1)
-        throw makeErrnoExceptionV("CFile::move(%s, %s)", filename.get(), newname);
+    doRename(filename, newname, "CFile::move");
 #endif
     filename.set(newname);
 }
@@ -1827,10 +1904,13 @@ void CFileIO::close()
 {
     if (file != NULLFILE)
     {
-        if (!CloseHandle(file))
+        // ensure file handle is cleared before throwing exception, to avoid dtor recalling close() as stack unwinds.
+        HANDLE tmpHandle = NULLFILE;
+        std::swap(tmpHandle, file);
+
+        if (!CloseHandle(tmpHandle))
             throw makeOsException(GetLastError(),"CFileIO::close");
     }
-    file = NULLFILE;
 }
 
 void CFileIO::flush()
@@ -1931,6 +2011,7 @@ CFileIO::~CFileIO()
     catch (IException * e)
     {
         EXCLOG(e, "CFileIO::~CFileIO");
+        PrintStackReport();
         e->Release();
     }
 }
@@ -1939,26 +2020,30 @@ void CFileIO::close()
 {
     if (file != NULLFILE)
     {
+        // ensure file handle is cleared before throwing exception, to avoid dtor recalling close() as stack unwinds.
+        HANDLE tmpHandle = NULLFILE;
+        std::swap(tmpHandle, file);
+
 #ifdef CFILEIOTRACE
-        DBGLOG("CFileIO::close(%d), extraFlags = %d", file, extraFlags);
+        DBGLOG("CFileIO::close(%d), extraFlags = %d", tmpHandle, extraFlags);
 #endif
         if (extraFlags & IFEnocache)
         {
             if (openmode != IFOread)
             {
 #ifdef F_FULLFSYNC
-                fcntl(file, F_FULLFSYNC);
+                fcntl(tmpHandle, F_FULLFSYNC);
 #else
-                fdatasync(file);
+                fdatasync(tmpHandle);
 #endif
             }
 #ifdef POSIX_FADV_DONTNEED
-            posix_fadvise(file, 0, 0, POSIX_FADV_DONTNEED);
+            posix_fadvise(tmpHandle, 0, 0, POSIX_FADV_DONTNEED);
 #endif
         }
-        if (::close(file) < 0)
+
+        if (::close(tmpHandle) < 0)
             throw makeErrnoException(errno, "CFileIO::close");
-        file=NULLFILE;
     }
 }
 
@@ -2177,7 +2262,7 @@ void CCheckingFileIO::report(const char * format, ...)
 {
     va_list args;
     va_start(args, format);
-    VALOG(MCinternalError, unknownJob, format, args);
+    VALOG(MCdebugError, unknownJob, format, args);
     va_end(args);
     if (!traced)
     {
@@ -2299,10 +2384,13 @@ void CFileAsyncIO::close()
     // wait for all outstanding results
     if (file != NULLFILE)
     {
-        if (!CloseHandle(file))
+        // ensure file handle is cleared before throwing exception, to avoid dtor recalling close() as stack unwinds.
+        HANDLE tmpHandle = NULLFILE;
+        std::swap(tmpHandle, file);
+
+        if (!CloseHandle(tmpHandle))
             throw makeOsException(GetLastError(),"CFileAsyncIO::close");
     }
-    file = NULLFILE;
 }
 
 offset_t CFileAsyncIO::size()
@@ -2467,11 +2555,14 @@ void CFileAsyncIO::close()
 {
     if (file != NULLFILE)
     {
-        aio_cancel(file,NULL);
-        if (_lclose(file) < 0)
+        // ensure file handle is cleared before throwing exception, to avoid dtor recalling close() as stack unwinds.
+        HANDLE tmpHandle = NULLFILE;
+        std::swap(tmpHandle, file);
+
+        aio_cancel(tmpHandle, NULL);
+        if (_lclose(tmpHandle) < 0)
             throw makeErrnoException(errno, "CFileAsyncIO::close");
     }
-    file=NULLFILE;
 }
 
 offset_t CFileAsyncIO::size()
@@ -2561,6 +2652,7 @@ CFileIOStream::CFileIOStream(IFileIO * _io)
 
 void CFileIOStream::flush()
 {
+    io->flush();
 }
 
 
@@ -5848,6 +5940,24 @@ IFileIO *createUniqueFile(const char *dir, const char *prefix, const char *ext, 
     }
 }
 
+IFile * writeToProtectedTempFile(const char * component, const char * prefix, size_t len, const void * data)
+{
+    Owned<IFile> protectedFile;
+    StringBuffer tempDir;
+    getTempFilePath(tempDir, component, nullptr);
+
+    StringBuffer tempFilename;
+    OwnedIFileIO io = createUniqueFile(tempDir, prefix, NULL, tempFilename);
+    io->write(0, len, data);
+    io->close();
+
+    //Prevent any other users from accessing the file
+    protectedFile.setown(createIFile(tempFilename));
+    protectedFile->setFilePermissions(0700);
+
+    return protectedFile.getClear();
+}
+
 unsigned sortDirectory( CIArrayOf<CDirectoryEntry> &sortedfiles,
                         IDirectoryIterator &iter, 
                         SortDirectoryMode mode,
@@ -7457,4 +7567,16 @@ IPropertyTree * getRemoteStorage(const char * name)
     VStringBuffer xpath("storage/remote[@name='%s']", name);
     Owned<IPropertyTree> global = getGlobalConfig();
     return global->getPropTree(xpath);
+}
+
+IAPICopyClient * createApiCopyClient(IStorageApiInfo * source, IStorageApiInfo * target)
+{
+    ReadLockBlock block(containedFileHookLock);
+    ForEachItemIn(i, containedFileHooks)
+    {
+        IAPICopyClient * copyClient = containedFileHooks.item(i).getCopyApiClient(source, target);
+        if (copyClient)
+            return copyClient;
+    }
+    return nullptr;
 }

@@ -340,6 +340,7 @@ public:
     bool onWUGetArchiveFile(IEspContext &context, IEspWUGetArchiveFileRequest &req, IEspWUGetArchiveFileResponse &resp);
     bool onWUEclDefinitionAction(IEspContext &context, IEspWUEclDefinitionActionRequest &req, IEspWUEclDefinitionActionResponse &resp);
     bool onWUGetPlugins(IEspContext &context, IEspWUGetPluginsRequest &req, IEspWUGetPluginsResponse &resp);
+    virtual bool onWUAnalyseHotspot(IEspContext &context, IEspWUAnalyseHotspotRequest &req, IEspWUAnalyseHotspotResponse &resp) override;
 
     bool unsubscribeServiceFromDali() override
     {
@@ -432,6 +433,7 @@ private:
     Owned<IWorkUnitFactory> wuFactory;
     StringBuffer tempDirectory;
     __uint64 wuResultMaxSize = defaultWUResultMaxSize;
+    StringAttr espApplicationName;
 
 public:
     QueryFilesInUse filesInUse;
@@ -449,6 +451,7 @@ public:
     CWsWorkunitsSoapBindingEx(IPropertyTree *cfg, const char *name, const char *process, http_soap_log_level llevel) : CWsWorkunitsSoapBinding(cfg, name, process, llevel)
     {
         wswService = NULL;
+        espApplicationName.set(process);
         VStringBuffer xpath("Software/EspProcess[@name=\"%s\"]/EspBinding[@name=\"%s\"]/BatchWatch", process, name);
         batchWatchFeaturesOnly = cfg->getPropBool(xpath.str(), false);
         directories.set(cfg->queryPropTree("Software/Directories"));
@@ -503,6 +506,7 @@ private:
     Owned<IPropertyTree> directories;
     unsigned thorSlaveLogThreadPoolSize = THOR_SLAVE_LOG_THREAD_POOL_SIZE;
     size32_t wuResultDownloadFlushThreshold = defaultWUResultDownloadFlushThreshold;
+    StringAttr espApplicationName;
 };
 
 void deploySharedObject(IEspContext &context, StringBuffer &wuid, const char *filename, const char *cluster, const char *name, const MemoryBuffer &obj, const char *dir, const char *xml=NULL, bool protect=false);

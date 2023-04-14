@@ -1,21 +1,24 @@
 import * as React from "react";
 import { ICommandBarItemProps, CommandBar } from "@fluentui/react";
-import { format as d3Format } from "@hpcc-js/common";
 import nlsHPCC from "src/nlsHPCC";
+import { QuerySortItem } from "src/store/Store";
+import * as Utility from "src/Utility";
 import { useFluentGrid } from "../hooks/grid";
 import { useFile } from "../hooks/file";
 import { HolyGrail } from "../layouts/HolyGrail";
 
-const formatNum = d3Format(",");
-
 interface FilePartsProps {
     cluster?: string;
     logicalFile: string;
+    sort?: QuerySortItem;
 }
+
+const defaultSort = { attribute: "Id", descending: false };
 
 export const FileParts: React.FunctionComponent<FilePartsProps> = ({
     cluster,
-    logicalFile
+    logicalFile,
+    sort = defaultSort
 }) => {
 
     const [file, , , refreshData] = useFile(cluster, logicalFile);
@@ -25,15 +28,25 @@ export const FileParts: React.FunctionComponent<FilePartsProps> = ({
     const { Grid, copyButtons } = useFluentGrid({
         data,
         primaryID: "Id",
-        sort: { attribute: "Id", descending: false },
+        sort,
         filename: "fileParts",
         columns: {
             Id: { label: nlsHPCC.Part, sortable: true, width: 80 },
             Copy: { label: nlsHPCC.Copy, sortable: true, width: 80 },
             Ip: { label: nlsHPCC.IP, sortable: true, width: 80 },
-            Cluster: { label: nlsHPCC.Cluster, sortable: true, width: 480 },
-            PartsizeInt64: { label: nlsHPCC.Size, sortable: true, width: 120 },
-            CompressedSize: { label: nlsHPCC.CompressedSize, sortable: true, width: 120 },
+            Cluster: { label: nlsHPCC.Cluster, sortable: true, width: 280 },
+            PartsizeInt64: {
+                label: nlsHPCC.Size, sortable: true, width: 120,
+                formatter: React.useCallback(function (value, row) {
+                    return Utility.safeFormatNum(value);
+                }, []),
+            },
+            CompressedSize: {
+                label: nlsHPCC.CompressedSize, sortable: true, width: 120,
+                formatter: React.useCallback(function (value, row) {
+                    return Utility.safeFormatNum(value);
+                }, [])
+            },
         }
     });
 
@@ -45,8 +58,8 @@ export const FileParts: React.FunctionComponent<FilePartsProps> = ({
                 Copy: part.Copy,
                 Ip: part.Ip,
                 Cluster: cluster,
-                PartsizeInt64: formatNum(part.PartSizeInt64),
-                CompressedSize: part.CompressedSize ? formatNum(part.CompressedSize) : ""
+                PartsizeInt64: part.PartSizeInt64,
+                CompressedSize: part.CompressedSize
             };
         }));
     }, [cluster, file]);

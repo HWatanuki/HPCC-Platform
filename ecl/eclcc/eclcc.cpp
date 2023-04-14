@@ -307,14 +307,16 @@ protected:
     bool isWithinPath(const char * sourcePathname, const char * searchPath);
     void getComplexity(IWorkUnit *wu, IHqlExpression * query, IErrorReceiver & errorProcessor);
     void outputXmlToOutputFile(EclCompileInstance & instance, IPropertyTree * xml);
-    void processSingleQuery(EclCompileInstance & instance,
-                               IFileContents * queryContents,
-                               const char * queryAttributePath);
+    void processSingleQuery(const EclRepositoryManager & localRepositoryManager,
+                            EclCompileInstance & instance,
+                            IFileContents * queryContents,
+                            const char * queryAttributePath);
     void processXmlFile(EclCompileInstance & instance, const char *archiveXML);
     void processFile(EclCompileInstance & info);
     void processReference(EclCompileInstance & instance, const char * queryAttributePath, const char * queryAttributePackage);
     void processBatchFiles();
     void processDefinitions(EclRepositoryManager & target);
+    void recordPackagesUsed(IWorkUnit * wu, const EclRepositoryManager & manager);
     void reportCompileErrors(IErrorReceiver & errorProcessor, const char * processName);
     void setDebugOption(const char * name, bool value);
     void traceError(char const * format, ...) __attribute__((format(printf, 2, 3)));
@@ -395,7 +397,6 @@ protected:
     unsigned optThreads = 0;
     unsigned batchPart = 0;
     unsigned batchSplit = 1;
-    unsigned optLogDetail = 0;
     unsigned optMonitorInterval = 60;
     unsigned optMaxErrors = 0;
     unsigned optDaliTimeout = 30000;
@@ -701,7 +702,7 @@ void EclCC::loadOptions()
     {
         Owned<ILogMsgHandler> handler = getHandleLogMsgHandler(stdout);
         handler->setMessageFields(MSGFIELD_STANDARD);
-        Owned<ILogMsgFilter> filter = getCategoryLogMsgFilter(MSGAUD_all, MSGCLS_all, optLogDetail ? optLogDetail : DefaultDetail, true);
+        Owned<ILogMsgFilter> filter = getCategoryLogMsgFilter(MSGAUD_all, MSGCLS_all, DefaultDetail, true);
         queryLogMsgManager()->addMonitor(handler, filter);
     }
 #ifndef _CONTAINERIZED
@@ -715,7 +716,7 @@ void EclCC::loadOptions()
             if (optLogfile.length())
             {
                 StringBuffer lf;
-                openLogFile(lf, optLogfile, optLogDetail, false);
+                openLogFile(lf, optLogfile, 0, false);
                 if (logVerbose)
                     fprintf(stdout, "Logging to '%s'\n",lf.str());
             }
@@ -1003,7 +1004,7 @@ void EclCC::instantECL(EclCompileInstance & instance, IWorkUnit *wu, const char 
 void EclCC::getComplexity(IWorkUnit *wu, IHqlExpression * query, IErrorReceiver & errs)
 {
     double complexity = getECLcomplexity(query, &errs, wu, optTargetClusterType);
-    LOG(MCstats, unknownJob, "Complexity = %g", complexity);
+    LOG(MCoperatorProgress, unknownJob, "Complexity = %g", complexity);
 }
 
 //=========================================================================================
@@ -1184,7 +1185,8 @@ void EclCC::evaluateResult(EclCompileInstance & instance)
     printf("%s\n", out.str());
 }
 
-void EclCC::processSingleQuery(EclCompileInstance & instance,
+void EclCC::processSingleQuery(const EclRepositoryManager & localRepositoryManager,
+                               EclCompileInstance & instance,
                                IFileContents * queryContents,
                                const char * queryAttributePath)
 {
@@ -1240,6 +1242,7 @@ void EclCC::processSingleQuery(EclCompileInstance & instance,
     applyDebugOptions(instance.wu);
     applyApplicationOptions(instance.wu);
 
+    optTargetCompiler = queryCompilerType(instance.wu, optTargetCompiler);
     if (optTargetCompiler != DEFAULT_COMPILER)
         instance.wu->setDebugValue("targetCompiler", compilerTypeText[optTargetCompiler], true);
 
@@ -1486,6 +1489,8 @@ void EclCC::processSingleQuery(EclCompileInstance & instance,
             errorProcessor.reportError(3, s.str(), defaultErrorPathname, 1, 0, 0);
             e->Release();
         }
+
+        recordPackagesUsed(instance.wu, localRepositoryManager);
     }
 
     //Free up the repository (and any cached expressions) as soon as the expression has been parsed
@@ -1728,7 +1733,7 @@ void EclCC::processXmlFile(EclCompileInstance & instance, const char *archiveXML
     //Ensure classes are not linked by anything else
     localRepositoryManager.kill();  // help ensure non-shared repositories are freed as soon as possible
 
-    processSingleQuery(instance, contents, queryAttributePath);
+    processSingleQuery(localRepositoryManager, instance, contents, queryAttributePath);
 }
 
 
@@ -1855,7 +1860,7 @@ void EclCC::processFile(EclCompileInstance & instance)
             instance.dataServer.setown(localRepositoryManager.createPackage(nullptr));
         }
 
-        processSingleQuery(instance, queryText, attributePath.str());
+        processSingleQuery(localRepositoryManager, instance, queryText, attributePath.str());
     }
 
     if (!instance.reportErrorSummary() || instance.archive || (optGenerateMeta && instance.generatedMeta))
@@ -2055,11 +2060,23 @@ void EclCC::processReference(EclCompileInstance & instance, const char * queryAt
         }
     }
 
-    processSingleQuery(instance, NULL, queryAttributePath);
+    processSingleQuery(localRepositoryManager, instance, NULL, queryAttributePath);
 
     if (instance.reportErrorSummary())
         return;
     generateOutput(instance);
+}
+
+void EclCC::recordPackagesUsed(IWorkUnit * wu, const EclRepositoryManager & manager)
+{
+    StringArray packages;
+    manager.gatherPackagesUsed(packages);
+    ForEachItemIn(i, packages)
+    {
+        StringBuffer key;
+        key.append("package").append(i+1);
+        wu->setApplicationValue("packages", key, packages.item(i), true);
+    }
 }
 
 bool EclCC::generatePrecompiledHeader()
@@ -2628,6 +2645,7 @@ int EclCC::parseCommandLineOptions(int argc, const char* argv[])
     StringAttr tempArg;
     bool tempBool;
     bool showHelp = false;
+    unsigned tempUnsigned;
     for (; !iter.done(); iter.next())
     {
         const char * arg = iter.query();
@@ -2851,7 +2869,7 @@ int EclCC::parseCommandLineOptions(int argc, const char* argv[])
         else if (iter.matchFlag(optNoBundles, "--nobundles"))
         {
         }
-        else if (iter.matchOption(optLogDetail, "--logdetail"))
+        else if (iter.matchOption(tempUnsigned, "--logdetail")) // Now ignored
         {
         }
         else if (iter.matchOption(optMonitorInterval, "--monitorinterval"))
@@ -3212,7 +3230,7 @@ void EclCC::processBatchedFile(IFile & file, bool multiThreaded)
         {
             if (!multiThreaded)
             {
-                handler.setown(getHandleLogMsgHandler(logFile, 0, false));
+                handler.setown(getHandleLogMsgHandler(logFile, 0, LOGFORMAT_table));
                 Owned<ILogMsgFilter> filter = getCategoryLogMsgFilter(MSGAUD_all, MSGCLS_all, DefaultDetail);
                 queryLogMsgManager()->addMonitor(handler, filter);
 
